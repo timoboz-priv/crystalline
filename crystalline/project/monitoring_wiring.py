@@ -3,12 +3,16 @@ Agent` with `crystalline.monitoring`.
 
 Needs `crystalline.agents` (concretely, `claude_agent_sdk`'s message
 shapes), `crystalline.events` (`Router`/`RuleBasedRouter`/`AgentHandoff`/
-`Event`), and `crystalline.monitoring` (`SessionStore`/`Session`/`Turn`/
-`SessionEvent`) all at once — that combination is a wiring concern, same
-as `agent_wiring.py` bridging `crystalline.tools`+`crystalline.agents`,
-so it lives here rather than inside `crystalline.monitoring` or
-`crystalline.events` themselves (both of which stay dependency-light per
-the architecture doc's dependency table).
+`Event`), `crystalline.monitoring` (`SessionStore`/`Session`/`Turn`/
+`SessionEvent`), and `crystalline.security` (`bind_token`, for binding a
+routed event's token around a direct tool dispatch) all at once — that
+combination is a wiring concern, same as `agent_wiring.py` bridging
+`crystalline.tools`+`crystalline.agents`, so it lives here rather than
+inside `crystalline.monitoring` or `crystalline.events` themselves (both
+of which stay dependency-light per the architecture doc's dependency
+table). Unlike `crystalline.events`, `crystalline.security` has no
+circular-dependency entanglement with this module, so it's imported
+normally at the top, not deferred to `TYPE_CHECKING`/a local import.
 
 **Session/Turn/SessionEvent ownership, end to end:**
 
@@ -71,6 +75,7 @@ from crystalline.monitoring import (
     SessionStore,
     Turn,
 )
+from crystalline.security import bind_token
 from crystalline.tools import to_jsonable
 
 if TYPE_CHECKING:
@@ -79,12 +84,15 @@ if TYPE_CHECKING:
     # module importing crystalline.events back at the top level would be a
     # genuine bidirectional circular import between the two packages, not
     # just an ordering issue `__init__.py` reordering can fix. `Event`/
-    # `AgentHandoff`/`RuleBasedRouter` are only ever actually constructed/
-    # isinstance-checked inside function bodies below, via a local import
-    # there — `from __future__ import annotations` already makes every
-    # annotation in this file a deferred string, so TYPE_CHECKING is only
-    # needed for a type checker's sake, not to avoid a runtime error.
-    from crystalline.events import AgentHandoff, Event, RouteResult, RuleBasedRouter
+    # `RouteResult`/`RuleBasedRouter` are needed only for annotations below
+    # (safe here since `from __future__ import annotations` already makes
+    # every annotation in this file a deferred string — TYPE_CHECKING is
+    # only needed for a type checker's sake, not to avoid a runtime error).
+    # `RuleBasedRouter` is also constructed at runtime, via its own local
+    # import inside `build_router()`; `AgentHandoff` never appears in an
+    # annotation at all (only constructed at runtime, via a local import
+    # inside `route()`), so it has no reason to be imported here too.
+    from crystalline.events import Event, RouteResult, RuleBasedRouter
 
     from .project import Project
 
@@ -444,8 +452,6 @@ class MonitoredRouter:
         try:
             data = tool.input_model.model_validate(event.payload)
             if event.token is not None:
-                from crystalline.security import bind_token
-
                 with bind_token(event.token):
                     result = await tool.invoke(data)
             else:

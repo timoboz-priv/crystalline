@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any, TypeVar
+from typing import Any, TypeVar, cast
 
 from pydantic import BaseModel
 
@@ -29,16 +29,20 @@ class InMemoryStorage(Storage):
         return instance
 
     def get(self, model: type[T], record_id: Any) -> T | None:
-        return self._table(model).get(record_id)  # type: ignore[return-value]
+        # `_table(model)` is `dict[Any, BaseModel]` (one shared value type
+        # across every model stored this way), but every value actually
+        # stored under `model`'s collection name is a `T` — `model` is
+        # what the caller used to select this bucket in the first place.
+        return cast("T | None", self._table(model).get(record_id))
 
     def update(self, model: type[T], record_id: Any, **changes: Any) -> T:
         table = self._table(model)
         existing = table.get(record_id)
         if existing is None:
             raise KeyError(f"No {model.__name__} record with id={record_id!r}")
-        updated = self._apply_changes(existing, changes)  # type: ignore[arg-type]
+        updated = self._apply_changes(cast(T, existing), changes)
         table[record_id] = updated
-        return updated  # type: ignore[return-value]
+        return updated
 
     def delete(self, model: type[T], record_id: Any) -> bool:
         return self._table(model).pop(record_id, None) is not None
@@ -49,4 +53,4 @@ class InMemoryStorage(Storage):
             records = [
                 r for r in records if all(getattr(r, k, None) == v for k, v in filters.items())
             ]
-        return records  # type: ignore[return-value]
+        return cast("list[T]", records)

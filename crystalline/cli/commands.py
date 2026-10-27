@@ -10,7 +10,13 @@ from pydantic import ValidationError
 from rich.panel import Panel
 
 from crystalline.agents import Agent
-from crystalline.project import Project, apply_extensions, build_agent, describe_project, load_project
+from crystalline.project import (
+    Project,
+    apply_extensions,
+    build_agent,
+    describe_project,
+    load_project,
+)
 from crystalline.security import User, current_token, rebind_token
 
 from .console import console, print_error, render_result

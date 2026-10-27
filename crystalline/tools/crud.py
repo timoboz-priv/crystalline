@@ -16,13 +16,13 @@ generated tools with fresh ones reflecting the current schema/storage.
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, cast
 
 from pydantic import BaseModel, create_model
 
 from crystalline.schema import CrystallineModel, SchemaRegistry
 from crystalline.security import RESERVED_TYPE_NAMES
-from crystalline.storage import Storage
+from crystalline.storage import HasId, Storage
 
 from .naming import to_snake_case
 from .registry import ToolRegistry
@@ -73,15 +73,18 @@ def _build_crud_tools_for_type(
     async def create_handler(data: BaseModel) -> BaseModel:
         return storage.create(data)
 
+    # `data` here is always a `*IdInput`/`*UpdateInput` instance built above
+    # with an explicit `id=(id_type, ...)` field, so `.id` is always there
+    # at runtime — `BaseModel` itself just doesn't declare it, hence `HasId`.
     async def get_handler(data: BaseModel) -> BaseModel | None:
-        return storage.get(model, data.id)  # type: ignore[attr-defined]
+        return storage.get(model, cast(HasId, data).id)
 
     async def update_handler(data: BaseModel) -> BaseModel:
         changes = data.model_dump(exclude={"id"}, exclude_unset=True)
-        return storage.update(model, data.id, **changes)  # type: ignore[attr-defined]
+        return storage.update(model, cast(HasId, data).id, **changes)
 
     async def delete_handler(data: BaseModel) -> bool:
-        return storage.delete(model, data.id)  # type: ignore[attr-defined]
+        return storage.delete(model, cast(HasId, data).id)
 
     async def list_handler(data: BaseModel) -> list[BaseModel]:
         filters = data.model_dump(exclude_unset=True)

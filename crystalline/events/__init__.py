@@ -1,5 +1,5 @@
 from .event import TEXT_EVENT_TYPE, Event
-from .router import AgentHandoff, RouteResult, Router, RuleBasedRouter
+from .router import AgentHandoff, Router, RouteResult, RuleBasedRouter
 
 __all__ = [
     "Event",

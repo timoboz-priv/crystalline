@@ -15,13 +15,29 @@ from __future__ import annotations
 
 import re
 from abc import ABC, abstractmethod
-from typing import Any, TypeVar
+from typing import Any, Protocol, TypeVar, cast
 
 from pydantic import BaseModel
 
 T = TypeVar("T", bound=BaseModel)
 
 _IDENTIFIER_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+
+
+class HasId(Protocol):
+    """Structural shape of a `BaseModel` that actually has an `id` field.
+
+    `T` stays bound to plain `BaseModel` (not this protocol) because
+    `Storage` is deliberately usable with *any* Pydantic model, not just
+    ones that subclass a dedicated base — the `id`-field requirement is a
+    runtime contract (`_require_id_field`), not something expressible as
+    a static bound without forcing that subclassing. `HasId` exists so the
+    handful of places that actually read `.id` off a `T` can say so via a
+    narrow, explicit `cast` instead of a blanket `# type: ignore` on the
+    whole line.
+    """
+
+    id: Any
 
 
 class Storage(ABC):
@@ -43,7 +59,7 @@ class Storage(ABC):
 
     @staticmethod
     def _id_of(instance: BaseModel) -> Any:
-        return instance.id  # type: ignore[attr-defined]
+        return cast(HasId, instance).id
 
     @classmethod
     def _apply_changes(cls, existing: T, changes: dict[str, Any]) -> T:

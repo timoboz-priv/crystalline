@@ -90,3 +90,57 @@ def test_register_storage_backend():
     storage = build_storage({"type": "fake", "flavor": "test"})
     assert isinstance(storage, FakeStorage)
     assert calls == [{"flavor": "test"}]
+
+
+def test_register_storage_backend_with_describe_round_trips():
+    class FakeDescribableStorage(Storage):
+        def __init__(self, flavor: str) -> None:
+            self.flavor = flavor
+
+        def create(self, instance):
+            raise NotImplementedError
+
+        def get(self, model, record_id):
+            raise NotImplementedError
+
+        def update(self, model, record_id, **changes):
+            raise NotImplementedError
+
+        def delete(self, model, record_id):
+            raise NotImplementedError
+
+        def list(self, model, **filters):
+            raise NotImplementedError
+
+    # "fake_describable" is a throwaway name no other test/code uses, so
+    # leaving it registered in the module-level registry afterwards is
+    # harmless.
+    register_storage_backend(
+        "fake_describable",
+        lambda **properties: FakeDescribableStorage(**properties),
+        storage_cls=FakeDescribableStorage,
+        describe=lambda storage, base_dir: {"flavor": storage.flavor},
+    )
+    storage = build_storage({"type": "fake_describable", "flavor": "test"})
+    assert describe_storage(storage) == {"type": "fake_describable", "flavor": "test"}
+
+
+def test_describe_storage_unregistered_backend_raises():
+    class UnregisteredStorage(Storage):
+        def create(self, instance):
+            raise NotImplementedError
+
+        def get(self, model, record_id):
+            raise NotImplementedError
+
+        def update(self, model, record_id, **changes):
+            raise NotImplementedError
+
+        def delete(self, model, record_id):
+            raise NotImplementedError
+
+        def list(self, model, **filters):
+            raise NotImplementedError
+
+    with pytest.raises(ValueError):
+        describe_storage(UnregisteredStorage())

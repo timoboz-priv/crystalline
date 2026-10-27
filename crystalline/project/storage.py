@@ -17,16 +17,36 @@ from typing import Any
 from crystalline.storage import InMemoryStorage, SQLiteStorage, Storage
 
 StorageFactory = Callable[..., Storage]
+StorageDescriber = Callable[[Storage, Path | None], dict[str, Any]]
 
 _BACKENDS: dict[str, StorageFactory] = {
     "memory": lambda **properties: InMemoryStorage(**properties),
     "sqlite": lambda **properties: SQLiteStorage(**properties),
 }
 
+_DESCRIBERS: dict[str, tuple[type[Storage], StorageDescriber]] = {}
 
-def register_storage_backend(name: str, factory: StorageFactory) -> None:
-    """Make `build_storage`/project files able to use `{"type": name, ...}`."""
+
+def register_storage_backend(
+    name: str,
+    factory: StorageFactory,
+    *,
+    storage_cls: type[Storage] | None = None,
+    describe: StorageDescriber | None = None,
+) -> None:
+    """Make `build_storage`/project files able to use `{"type": name, ...}`.
+
+    `storage_cls`/`describe` are optional and only needed if this backend's
+    instances should also round-trip back out through `describe_storage`
+    (e.g. for `save_project`) — without them, `build_storage` can construct
+    this backend from a project file, but `describe_storage` still won't
+    know how to turn a live instance of it back into `{"type": name, ...}`.
+    Both must be given together: `storage_cls` is how `describe_storage`
+    recognizes an instance as belonging to `name` in the first place.
+    """
     _BACKENDS[name] = factory
+    if storage_cls is not None and describe is not None:
+        _DESCRIBERS[name] = (storage_cls, describe)
 
 
 def resolve_storage_paths(config: dict[str, Any], base_dir: Path) -> dict[str, Any]:
@@ -63,6 +83,10 @@ def describe_storage(storage: Storage, base_dir: Path | None = None) -> dict[str
     reads it with. Without this, round-tripping through save/load would
     silently turn a portable relative `path` into a machine-specific
     absolute one on the first save.
+
+    Falls back to a backend registered via `register_storage_backend`'s
+    `storage_cls`/`describe` kwargs for anything beyond the two built-in
+    backends handled directly below.
     """
     if isinstance(storage, InMemoryStorage):
         return {"type": "memory"}
@@ -73,4 +97,7 @@ def describe_storage(storage: Storage, base_dir: Path | None = None) -> dict[str
             if absolute.is_absolute() and absolute.is_relative_to(base_dir):
                 path = str(absolute.relative_to(base_dir))
         return {"type": "sqlite", "path": path}
+    for name, (storage_cls, describe) in _DESCRIBERS.items():
+        if isinstance(storage, storage_cls):
+            return {"type": name, **describe(storage, base_dir)}
     raise ValueError(f"Cannot describe unknown storage backend: {storage!r}")
