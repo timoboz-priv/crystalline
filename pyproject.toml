@@ -1,0 +1,24 @@
+[project]
+name = "crystalline"
+version = "0.1.0"
+description = "Framework where deterministic execution meets agentic reasoning"
+requires-python = ">=3.11"
+dependencies = [
+    "claude-agent-sdk>=0.2.174",
+    "pydantic>=2.9",
+    "pyyaml>=6.0",
+    "pyjwt>=2.8",
+    "bcrypt>=4.0",
+    "rich>=13.7",
+    "prompt-toolkit>=3.0",
+]
+
+[project.scripts]
+crystalline = "crystalline.cli.main:main"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["crystalline*"]
