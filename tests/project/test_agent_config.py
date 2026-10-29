@@ -101,6 +101,9 @@ def test_register_agent_backend():
             return
             yield  # pragma: no cover
 
+        def describe_message(self, message):
+            return []
+
         async def run(self, prompt: str) -> str:
             return ""
 

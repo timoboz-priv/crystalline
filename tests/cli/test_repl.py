@@ -1,9 +1,11 @@
 import asyncio
 from collections.abc import AsyncIterator
 
+from typing import Any
+
 from claude_agent_sdk import AssistantMessage, TextBlock
 
-from crystalline.agents import Agent
+from crystalline.agents import Agent, TextChunk, ToolCallChunk
 from crystalline.cli.repl import _status_toolbar, run_repl
 from crystalline.project import Project
 
@@ -32,6 +34,15 @@ class FakeAgent(Agent):
 
     async def receive(self) -> AsyncIterator[AssistantMessage]:
         yield AssistantMessage(content=[TextBlock(text=self._pending_reply)], model="fake")
+
+    def describe_message(self, message: Any) -> list[TextChunk | ToolCallChunk]:
+        if not isinstance(message, AssistantMessage):
+            return []
+        return [
+            TextChunk(text=block.text)
+            for block in message.content
+            if isinstance(block, TextBlock)
+        ]
 
     async def run(self, prompt: str) -> str:
         await self.send(prompt)

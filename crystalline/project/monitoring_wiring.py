@@ -372,6 +372,9 @@ class MonitoredAgent(Agent):
                     )
             yield message
 
+    def describe_message(self, message: Any) -> Any:
+        return self._inner.describe_message(message)
+
     async def run(self, prompt: str) -> str:
         # Reimplemented in terms of this wrapper's own connect/send/receive
         # (not `self._inner.run()`) so recording happens regardless of

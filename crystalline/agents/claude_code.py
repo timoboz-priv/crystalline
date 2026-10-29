@@ -14,11 +14,12 @@ from claude_agent_sdk import (
     ClaudeSDKClient,
     PermissionMode,
     TextBlock,
+    ToolUseBlock,
     create_sdk_mcp_server,
     tool as sdk_tool,
 )
 
-from .base import Agent
+from .base import Agent, TextChunk, ToolCallChunk
 
 
 class ClaudeCodeAgent(Agent):
@@ -152,21 +153,29 @@ class ClaudeCodeAgent(Agent):
         async for message in self._require_client().receive_response():
             yield message
 
+    def describe_message(self, message: Any) -> list[TextChunk | ToolCallChunk]:
+        if not isinstance(message, AssistantMessage):
+            return []
+        chunks: list[TextChunk | ToolCallChunk] = []
+        for block in message.content:
+            if isinstance(block, ToolUseBlock):
+                chunks.append(ToolCallChunk(name=block.name, input=block.input))
+            elif isinstance(block, TextBlock):
+                chunks.append(TextChunk(text=block.text))
+        return chunks
+
     async def run(self, prompt: str) -> str:
         owns_connection = not self.is_connected
         if owns_connection:
             await self.connect()
         try:
             await self.send(prompt)
-            chunks: list[str] = []
+            text_chunks: list[str] = []
             async for message in self.receive():
-                if isinstance(message, AssistantMessage):
-                    chunks.extend(
-                        block.text
-                        for block in message.content
-                        if isinstance(block, TextBlock)
-                    )
-            return "".join(chunks)
+                for chunk in self.describe_message(message):
+                    if isinstance(chunk, TextChunk):
+                        text_chunks.append(chunk.text)
+            return "".join(text_chunks)
         finally:
             if owns_connection:
                 await self.disconnect()

@@ -45,6 +45,9 @@ class FakeInnerAgent(AgentBase):
         for message in self._messages:
             yield message
 
+    def describe_message(self, message):
+        return []
+
     async def run(self, prompt: str) -> str:
         raise AssertionError("MonitoredAgent.run() must not delegate to inner.run()")
 

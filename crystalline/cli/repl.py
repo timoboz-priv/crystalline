@@ -10,14 +10,13 @@ import sys
 import uuid
 from pathlib import Path
 
-from claude_agent_sdk import AssistantMessage, TextBlock, ToolUseBlock
 from prompt_toolkit import PromptSession
 from prompt_toolkit.formatted_text import HTML, StyleAndTextTuples
 from prompt_toolkit.history import FileHistory
 from prompt_toolkit.styles import Style
 from rich.markup import escape
 
-from crystalline.agents import Agent
+from crystalline.agents import Agent, TextChunk, ToolCallChunk
 from crystalline.events import TEXT_EVENT_TYPE, AgentHandoff, Event
 from crystalline.project import Project, build_router
 from crystalline.security import current_token
@@ -208,15 +207,18 @@ async def _dispatch_text(ctx: CLIContext, line: str, session_id: str) -> None:
 
 
 async def _stream_reply(agent: Agent, prompt: str) -> None:
+    """Streams the reply via `Agent.describe_message` — normalized
+    `TextChunk`/`ToolCallChunk`s, not `claude_agent_sdk`'s own message
+    types — so this works against any `Agent` implementation, not just
+    `ClaudeCodeAgent`."""
     await agent.send(prompt)
     buffer: list[str] = []
     with console.status("Thinking...", spinner="dots"):
         async for message in agent.receive():
-            if isinstance(message, AssistantMessage):
-                for block in message.content:
-                    if isinstance(block, ToolUseBlock):
-                        print_tool_call(block.name, block.input)
-                    elif isinstance(block, TextBlock):
-                        buffer.append(block.text)
+            for chunk in agent.describe_message(message):
+                if isinstance(chunk, ToolCallChunk):
+                    print_tool_call(chunk.name, chunk.input)
+                elif isinstance(chunk, TextChunk):
+                    buffer.append(chunk.text)
     if buffer:
         render_reply("".join(buffer))

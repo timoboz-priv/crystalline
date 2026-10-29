@@ -38,6 +38,21 @@ class Skill:
     metadata: dict[str, Any] = field(default_factory=dict)
 
 
+@dataclass(frozen=True)
+class TextChunk:
+    """A chunk of assistant-visible text, normalized across backends."""
+
+    text: str
+
+
+@dataclass(frozen=True)
+class ToolCallChunk:
+    """An agent-initiated tool call, normalized across backends."""
+
+    name: str
+    input: dict[str, Any]
+
+
 class Agent(ABC):
     """Base abstraction for talking to a coding agent.
 
@@ -178,7 +193,25 @@ class Agent(ABC):
 
     @abstractmethod
     def receive(self) -> AsyncIterator[Any]:
-        """Stream raw response messages for the most recently sent prompt."""
+        """Stream raw, backend-native response messages for the most
+        recently sent prompt. Kept raw (not normalized) rather than
+        narrowed to `TextChunk`/`ToolCallChunk` here, since some consumers
+        need full backend-specific fidelity a normalized shape would lose
+        — e.g. `crystalline.project.monitoring_wiring`'s Claude-specific
+        recorder reads cost/usage off a `ResultMessage` that has no
+        equivalent in a generic chunk. Use `describe_message` to interpret
+        one of these messages without importing this backend's own SDK
+        types."""
+
+    @abstractmethod
+    def describe_message(self, message: Any) -> list[TextChunk | ToolCallChunk]:
+        """Interpret one raw message yielded by `receive()` into zero or
+        more `TextChunk`/`ToolCallChunk`s a backend-agnostic consumer (e.g.
+        the CLI) can render without importing this agent's own SDK message
+        types — a list, not a single optional chunk, since one raw message
+        can carry several (e.g. interleaved text and tool-call blocks); an
+        empty list means nothing renderable (e.g. a message that only ends
+        the turn)."""
 
     @abstractmethod
     async def run(self, prompt: str) -> str:
