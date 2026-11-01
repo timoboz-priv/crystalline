@@ -37,8 +37,8 @@ between them as needed, and solidify over time.
 
 ## Components
 
-All of these are implemented except `crystalline.crystallization`. The
-table is ordered by dependency (each row may depend on rows above it):
+All ten components are implemented. The table is ordered by dependency
+(each row may depend on rows above it):
 
 | Sub-package | Responsibility | Depends on |
 |---|---|---|
@@ -51,7 +51,7 @@ table is ordered by dependency (each row may depend on rows above it):
 | `crystalline.project` | Top-level config object: schema/storage/security/tools/skills/agent/monitoring for one project | all of the above |
 | `crystalline.events` | `Event` + `Router`: decides whether an event is handled by a tool, a skill, or an agent | `security` (`Event`), `project` (`Router`, same package) |
 | `crystalline.monitoring` | Storage-agnostic session/turn/event recording | `events` (label only — the Claude-specific instrumentation lives in `project`) |
-| `crystalline.crystallization` | Mines monitored sessions, proposes/generates new tools/skills — **not yet built** | `monitoring`, `tools`, `skills`, `agents` |
+| `crystalline.crystallization` | Mines monitored sessions, proposes/generates new tools/skills | `monitoring`, `tools`, `skills`, `agents`, `project` |
 | `crystalline.cli` | Interactive command-line UI (not one of the ten components above) | `project`, `agents`, `security`, `events` |
 
 ### Dependency direction
@@ -68,7 +68,7 @@ project = schema + tools + skills + agents + security + monitoring, wired togeth
 events  = security (Event.token) + project (Router, same package)
 monitoring = events (label only; real instrumentation lives in project.monitoring_wiring)
 cli     = project + agents + security + events
-crystallization = monitoring + tools + skills + agents (not built)
+crystallization = monitoring + tools + skills + agents + project
 ```
 
 `crystalline.project.monitoring_wiring` (the Claude-specific instrumentation:
@@ -84,6 +84,16 @@ what the table says" cleanly: `Event` itself depends only on `security`,
 but `router.py` in the same package also depends on `project` — they live
 together because a router has nothing to route without a project's
 tools/skills to dispatch against.
+
+`crystalline.crystallization` depends on `project` for the same kind of
+reason: a `CrystallizationPlugin` deciding whether to reuse an existing
+tool/skill (versus generating a near-duplicate) needs live access to
+`project.tools`/`project.skills`/`project.extensions_dir`, not a snapshot
+taken ahead of time by whatever's calling it. Unlike the events/monitoring
+pair, this isn't circular — `crystalline.project` itself never imports
+`crystalline.crystallization` at the package level; only
+`crystalline.project.crystallization_wiring` does, as the adapter module
+that also knows how to write an approved proposal to disk.
 
 Nothing below `project` in this graph should import `events`'s router
 half, `monitoring`, or `crystallization`. If you find yourself wanting
@@ -365,17 +375,59 @@ A project file's `monitoring:` section (`{type: sqlite, path: ...}`) has
 no always-on default, unlike `storage:` — no section means
 `Project.monitoring_store` is `None` and nothing is recorded.
 
-### `crystalline.crystallization` — not yet built
+### `crystalline.crystallization`
 
-Will periodically walk sessions captured by `monitoring`, look for
-recurring patterns in agent-only (non-crystallized) handling, and propose
-or generate new `tools`/`skills` to cover them, using `agents` to help
-write the new tool/skill itself. The most speculative component, last in
-dependency order since it needs everything else already working. Open
-design questions, to resolve when building it: cron-style periodic job
-vs. manual trigger; whether generated tools/skills are auto-merged or go
-through human review before becoming part of a project (likely
-human-in-the-loop initially).
+Walks a monitored session's `Turn`/`SessionEvent`s, and proposes new
+`tool_*.py`/`skill_*.py` extension files to cover whatever agentic
+tool-chaining it finds — using `agents` for the actual codegen reasoning.
+Trigger and review flow are resolved (see below): manual CLI trigger
+only, always human-in-the-loop, never auto-merged.
+
+**Crystallized output is an extension file, not a new artifact kind.**
+`crystalline.project.extensions` already defines exactly the shape
+needed — a `skill_*.py`/`tool_*.py` file with a `build_tool(project)`/
+`build_skill(project)` function, loaded by the existing
+`apply_extensions`/`/reload` machinery. A `CrystallizationProposal`
+(`crystalline/crystallization/models.py`) is just a list of `FileChange`s
+(`create`/`modify`/`delete`, relative to `project.extensions_dir`); "diff"
+means a literal `difflib.unified_diff` of file content
+(`crystallization/diff.py`), and "approve" means writing those files and
+re-running `/reload` — no separate apply/activate mechanism.
+
+**Plugin architecture.** `CrystallizationPlugin` (`crystallization/
+plugin.py`) is the extension point: `name` (the mode string
+`/crystallize <mode>` selects it by) plus `async propose(ctx) ->
+CrystallizationProposal | None`, where `ctx: CrystallizationContext`
+carries the live `Project`, the session's `Turn`/`SessionEvent`s, and a
+bare one-shot codegen `Agent`. `CrystallizationRegistry` maps mode names
+to plugins (same shape as `crystalline.cli.commands.CommandRegistry`).
+The first (and currently only) plugin, `SessionReplayPlugin` (mode
+`"session"`), mines the *current* CLI session: it prompts the codegen
+agent with the session's transcript, the project's existing
+tools/skills, and the current content of its extension files, explicitly
+instructing it to reuse what already covers part of the pattern rather
+than regenerate it, and to propose nothing if the pattern is already
+fully covered.
+
+A plugin only *reads* project state in `propose()` — it never writes.
+Writing an approved proposal to disk is a separate, explicit step
+(`crystalline.project.crystallization_wiring.apply_crystallization`),
+gated by human approval in the CLI (`/crystallize`, see below).
+
+Depends directly on `crystalline.project` (see "Dependency direction"
+above for why), via `crystalline/project/crystallization_wiring.py` — the
+adapter that gathers a session's monitoring data, builds the codegen
+agent (wrapped in `MonitoredAgent` so its own cost/tokens roll into the
+session's existing cost tracking under a `Turn` tagged
+`metadata={"kind": "crystallization", ...}`), runs the selected plugin,
+and (after approval) writes the result.
+
+The CLI's `/crystallize <mode>` command (`crystalline/cli/commands.py`)
+is the only trigger — no cron job. It prints the proposal's title/
+rationale and a syntax-highlighted diff per file, requires an explicit
+`y`/`yes` confirmation (`_confirm`, monkeypatchable in tests), then
+writes the files and re-runs the existing `/reload` command handler.
+Rejecting a proposal writes nothing.
 
 ### `crystalline.cli` — not one of the ten components
 
@@ -404,11 +456,9 @@ stays a separate code path until that changes.
 
 ## Open questions
 
-- **Crystallization trigger and review flow.** Cron-style periodic job
-  vs. manual trigger; whether generated tools/skills are auto-merged or go
-  through a human review/approval step before becoming part of a project.
-  Decide when building that component — likely human-in-the-loop
-  initially.
+None currently — the last one (crystallization's trigger/review flow)
+is resolved in `crystalline.crystallization`'s section above: manual CLI
+trigger, always human-in-the-loop, never auto-merged.
 
 ## Repository layout
 
@@ -424,7 +474,7 @@ crystalline/
   project/
   events/            # Event + Router
   monitoring/         # Session/Turn/SessionEvent, SessionStore, SQLiteSessionStore
-  crystallization/    # not yet built
+  crystallization/
   cli/                # not one of the ten components
 examples/
   demo_shop/          # worked example project (YAML), with seed_data.py and extensions/

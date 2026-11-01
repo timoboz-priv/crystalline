@@ -18,6 +18,7 @@ from rich.markup import escape
 
 from crystalline.agents import Agent, TextChunk, ToolCallChunk
 from crystalline.events import TEXT_EVENT_TYPE, AgentHandoff, Event
+from crystalline.monitoring import session_cost_total
 from crystalline.project import Project, build_router
 from crystalline.security import current_token
 
@@ -70,11 +71,12 @@ def _build_prompt_session() -> PromptSession:
     return PromptSession(history=FileHistory(str(HISTORY_PATH)), style=STATUS_BAR_STYLE)
 
 
-def _status_toolbar(project: Project) -> StyleAndTextTuples:
+def _status_toolbar(ctx: CLIContext) -> StyleAndTextTuples:
     # Two leading spaces so the text lines up with where typed input
     # starts after the "❯ " prompt (one glyph + one space).
+    cost = ctx.session_cost_usd if ctx.project.monitoring_store is not None else None
     toolbar: StyleAndTextTuples = [("class:bottom-toolbar", "  ")]
-    for i, (role, text) in enumerate(status_segments(project)):
+    for i, (role, text) in enumerate(status_segments(ctx.project, session_cost_usd=cost)):
         if i > 0:
             toolbar.append(("class:statusbar.sep", " · "))
         if role == "project":
@@ -117,14 +119,14 @@ async def run_repl(
     try:
         while True:
             try:
-                line = (await _read_line(session, ctx.project)).strip()
+                line = (await _read_line(session, ctx)).strip()
             except (EOFError, KeyboardInterrupt):
                 console.print()
                 break
 
             if not interactive:
                 print_divider()
-                print_status_line(ctx.project)
+                print_status_line(ctx.project, session_cost_usd=ctx.session_cost_usd)
 
             if not line:
                 continue
@@ -132,19 +134,31 @@ async def run_repl(
             ctx.history.append(line)
 
             if line.startswith("/"):
-                if not await _dispatch_command(ctx, line, commands):
+                keep_going = await _dispatch_command(ctx, line, commands)
+                _refresh_cost(ctx)
+                if not keep_going:
                     break
                 continue
 
             await _dispatch_text(ctx, line, session_id)
+            _refresh_cost(ctx)
     finally:
         await ctx.agent.disconnect()
 
 
-async def _read_line(session: PromptSession | None, project: Project) -> str:
+def _refresh_cost(ctx: CLIContext) -> None:
+    """Re-sum `ctx.session_cost_usd` from the monitoring store after a
+    line's dispatch — cheap (a handful of turns, SQLite), so doing this
+    once per line (not once per toolbar render) is the right cadence."""
+    if ctx.project.monitoring_store is not None and ctx.session_id is not None:
+        turns = ctx.project.monitoring_store.list_turns(ctx.session_id)
+        ctx.session_cost_usd = session_cost_total(turns)
+
+
+async def _read_line(session: PromptSession | None, ctx: CLIContext) -> str:
     if session is not None:
         return await session.prompt_async(
-            PROMPT_HTML, bottom_toolbar=lambda: _status_toolbar(project)
+            PROMPT_HTML, bottom_toolbar=lambda: _status_toolbar(ctx)
         )
     print_divider()
     console.print(PROMPT_MARKUP, end="")

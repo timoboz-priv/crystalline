@@ -76,6 +76,11 @@ EVENT_KIND_MESSAGE = "message"
 """Catch-all kind for a raw message type a recorder doesn't explicitly
 parse, so a message is never silently dropped just because nothing
 recognizes its shape yet."""
+EVENT_KIND_TURN_RESULT = "turn_result"
+"""Mirrors the outcome `end_turn(...)` is called with (status/duration_ms/
+total_cost_usd/usage/result/errors), as an event in the same stream as
+every other step — so a turn's cost/usage is visible by scanning events,
+not only by reading `Turn` fields directly."""
 
 TURN_STATUS_IN_PROGRESS = "in_progress"
 TURN_STATUS_COMPLETED = "completed"

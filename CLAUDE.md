@@ -7,12 +7,11 @@ how the pieces fit together.
 
 ## Status
 
-All ten architecture components are implemented except
-`crystalline.crystallization` (not started). `crystalline.cli` is also
-implemented — it's not one of the ten, built early as a stand-in UI/router
-layer. This file is the practical reference for working in the code:
-exact locations and non-obvious gotchas not covered in the architecture
-doc.
+All ten architecture components are implemented. `crystalline.cli` is
+also implemented — it's not one of the ten, built early as a stand-in
+UI/router layer. This file is the practical reference for working in
+the code: exact locations and non-obvious gotchas not covered in the
+architecture doc.
 
 **Naming overlaps worth knowing about (different namespaces, not code
 collisions):** `crystalline.agents.Skill` (SDK skill directories — markdown
@@ -127,7 +126,34 @@ SDK's session-resumption feature).
   plus local imports inside the few functions that actually construct
   `AgentHandoff`/`RuleBasedRouter`. Read `monitoring_wiring.py`'s
   docstring before changing either side's imports; a plain top-level
-  import on either side reintroduces a real `ImportError`.
+  import on either side reintroduces a real `ImportError`. `EVENT_KIND_
+  TURN_RESULT` events mirror a turn's outcome (status/duration/cost/
+  usage) into the event stream itself, not just onto `Turn` fields —
+  appended by `MonitoredAgent.receive()` right before `end_turn`.
+  `crystalline.monitoring.reporting` (`session_cost_total`/`turn_rows`)
+  turns a session's `Turn`s into cost/token figures for the CLI's
+  status bar and `/cost` command — deliberately shape-agnostic about
+  `Turn.usage`'s key names (just sums whatever ints it finds), since
+  those come from `claude_agent_sdk`'s `ResultMessage.usage`.
+
+- `crystalline.crystallization` — `crystalline/crystallization/*.py`.
+  Depends directly on `crystalline.project` (`CrystallizationContext`
+  carries the live `Project`, not a snapshot) — a plugin deciding
+  whether to reuse an existing tool/skill needs to see current state,
+  not what existed when the wiring layer was called. `CrystallizationPlugin`
+  (`propose(ctx) -> CrystallizationProposal | None`) + `CrystallizationRegistry`
+  (name -> plugin) is the extension point; `SessionReplayPlugin` (mode
+  `"session"`) is the only one built so far. A proposal is a list of
+  `FileChange`s (`create`/`modify`/`delete`) targeting
+  `project.extensions_dir` — crystallized output is just another
+  `tool_*.py`/`skill_*.py` extension file, loaded the usual way. The
+  orchestration (gather session data, build/monitor the codegen agent,
+  apply an approved proposal) lives in
+  `crystalline/project/crystallization_wiring.py`, same pattern as
+  `agent_wiring.py`/`monitoring_wiring.py`. A plugin only reads project
+  state in `propose()`; `apply_crystallization` (the only thing that
+  writes) runs only after human approval — see the CLI's `/crystallize`
+  below.
 
 - `crystalline.cli` — `crystalline/cli/*.py`. See **CLI practical notes**
   below.
@@ -153,9 +179,15 @@ references via `sys.modules[model.__module__]`.
 
 - Slash commands (`crystalline/cli/commands.py`): `/quit`, `/project`,
   `/reload`, `/commands`, `/whoami`, `/tools`, `/skills`, `/scopes`,
-  `/users <action>`, `/roles <action>`, `/history`. A handler may be sync
-  or async — `run_repl` awaits it if awaitable. These are direct
-  `Tool.invoke()` calls, not routed through `crystalline.events.Router`.
+  `/users <action>`, `/roles <action>`, `/history`, `/crystallize <mode>`,
+  `/cost`. A handler may be sync or async — `run_repl` awaits it if
+  awaitable. These are direct `Tool.invoke()` calls, not routed through
+  `crystalline.events.Router`. `/crystallize` prints a proposal's diff
+  and asks for confirmation via the module-level `_confirm` helper
+  (`asyncio.to_thread(console.input, ...)`) — monkeypatch
+  `commands._confirm` in tests rather than feeding real stdin; on
+  approval it reuses the `/reload` handler directly instead of
+  duplicating its token-remint/agent-rebuild logic.
 - Free text goes through the real router (`_dispatch_text` in
   `crystalline/cli/repl.py`): wrapped in a `TEXT_EVENT_TYPE` `Event`,
   routed via `build_router(ctx.project, session_id=...)` built fresh on
@@ -170,6 +202,13 @@ references via `sys.modules[model.__module__]`.
   use `[tag]` markup; anything dynamic must be escaped
   (`rich.markup.escape`) or routed through `Markdown`/`Table`, which
   don't interpret `[...]` as markup.
+- The status bar's cost segment (`cost: $0.0231`) comes from
+  `ctx.session_cost_usd`, refreshed once per line (`_refresh_cost` in
+  `repl.py`) by re-summing `project.monitoring_store.list_turns(...)` —
+  not recomputed on every toolbar render/keystroke, since
+  `_status_toolbar`'s `bottom_toolbar` lambda fires far more often than
+  that. Omitted entirely (not shown as `$0.0000`) when the project has
+  no `monitoring:` configured.
 - Status bar styling (`crystalline/cli/repl.py`, `STATUS_BAR_STYLE`)
   needs `noreverse` set explicitly on every class — prompt_toolkit's own
   default `"bottom-toolbar": "reverse"` rule's `reverse` attribute

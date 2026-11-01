@@ -6,6 +6,7 @@ schema:
     id: str
     name: str
     email: str
+    created_at: datetime
   Product:
     id: str
     name: str
@@ -14,6 +15,7 @@ schema:
       required: false
       default: ""
     price: float
+    created_at: datetime
   OrderItem:
     product_id: str
     count: int
@@ -23,6 +25,7 @@ schema:
     customer_id: str
     items: list[OrderItem]
     total: float
+    placed_at: datetime
 storage:
   type: sqlite
   path: demo_shop.db

@@ -55,11 +55,15 @@ def print_banner(project: Any, username: str | None = None) -> None:
     console.print(panel)
 
 
-def status_segments(project: Any) -> list[tuple[str, str]]:
+def status_segments(
+    project: Any, *, session_cost_usd: float | None = None
+) -> list[tuple[str, str]]:
     """`(role, text)` pairs describing the status line: role `"project"`
     for the highlighted lead segment, `"meta"` for everything else.
     Shared by both the rich (non-tty) and `prompt_toolkit` (tty) status
-    lines, so they always show the same information."""
+    lines, so they always show the same information. `session_cost_usd`
+    is `None` (segment omitted) whenever the project has no monitoring
+    configured, since there's nothing meaningful to show."""
     token = current_token()
     segments: list[tuple[str, str]] = [("project", f"{project.name} v{project.version}")]
     if token is not None:
@@ -70,6 +74,8 @@ def status_segments(project: Any) -> list[tuple[str, str]]:
     segments.append(("meta", f"{len(list(project.skills))} skills"))
     segments.append(("meta", f"storage: {describe_storage(project.storage)['type']}"))
     segments.append(("meta", f"agent: {project.agent_config.get('type', '?')}"))
+    if session_cost_usd is not None:
+        segments.append(("meta", f"cost: ${session_cost_usd:.4f}"))
     return segments
 
 
@@ -77,7 +83,7 @@ def print_divider() -> None:
     console.rule(style="muted")
 
 
-def print_status_line(project: Any) -> None:
+def print_status_line(project: Any, *, session_cost_usd: float | None = None) -> None:
     """A one-line footer: project name in bold white, everything else
     (user/roles, tool count, storage/agent backend) dim gray. Used for
     the non-interactive (piped/no-tty) REPL fallback — the interactive
@@ -85,7 +91,7 @@ def print_status_line(project: Any) -> None:
     instead (see `crystalline/cli/repl.py`'s `STATUS_BAR_STYLE`), with
     the same color scheme."""
     rendered = []
-    for role, text in status_segments(project):
+    for role, text in status_segments(project, session_cost_usd=session_cost_usd):
         text = escape(text)
         if role == "project":
             rendered.append(f"[statusbar_project]{text}[/statusbar_project]")

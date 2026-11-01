@@ -2,20 +2,28 @@
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import Any
 
 from pydantic import ValidationError
 from rich.panel import Panel
+from rich.syntax import Syntax
 
 from crystalline.agents import Agent
+from crystalline.crystallization import render_diff
+from crystalline.monitoring import turn_rows
 from crystalline.project import (
     Project,
+    apply_crystallization,
     apply_extensions,
     build_agent,
+    build_crystallization_registry,
     describe_project,
     load_project,
+    read_extension_files,
+    run_crystallization,
 )
 from crystalline.security import User, current_token, rebind_token
 
@@ -43,6 +51,11 @@ class CLIContext:
     invocation — set once by `run_repl`, reused by `/reload` so a rebuilt
     agent/router keep recording into the *same* session rather than
     starting a new one every reload."""
+    session_cost_usd: float = 0.0
+    """Running total of `total_cost_usd` across every turn recorded so
+    far this session — refreshed by `run_repl` after each line (command
+    or free text), read by the status bar. Stays 0.0 if monitoring isn't
+    configured."""
 
 
 @dataclass
@@ -333,4 +346,75 @@ async def _roles(ctx: CLIContext, args: list[str]) -> bool:
         return await _invoke_tool(ctx, "delete_role", name=rest[0])
 
     console.print(_ROLES_USAGE, style="muted")
+    return True
+
+
+async def _confirm(message: str) -> bool:
+    """`y`/`yes` (case-insensitive) -> True, anything else -> False.
+    Factored out (rather than inlined in `_crystallize`) so tests can
+    monkeypatch `commands._confirm` instead of feeding real stdin."""
+    answer = await asyncio.to_thread(console.input, message)
+    return answer.strip().lower() in ("y", "yes")
+
+
+_crystallization_registry = build_crystallization_registry()
+
+
+@default_commands.register(
+    "crystallize",
+    "Propose crystallizing the current session into a tool/skill. Usage: /crystallize <mode>.",
+)
+async def _crystallize(ctx: CLIContext, args: list[str]) -> bool:
+    known_modes = ", ".join(sorted(p.name for p in _crystallization_registry)) or "(none)"
+    if not args:
+        console.print(f"Usage: /crystallize <mode>. Known modes: {known_modes}", style="muted")
+        return True
+    mode = args[0]
+
+    if ctx.session_id is None:
+        print_error("No session id available to crystallize from.")
+        return True
+
+    try:
+        with console.status("Analyzing session...", spinner="dots"):
+            proposal = await run_crystallization(
+                ctx.project,
+                session_id=ctx.session_id,
+                mode=mode,
+                registry=_crystallization_registry,
+            )
+    except (KeyError, RuntimeError, ValueError) as exc:
+        print_error(str(exc))
+        return True
+
+    if proposal is None:
+        console.print("Nothing to crystallize.", style="muted")
+        return True
+
+    console.print(Panel(proposal.rationale, title=proposal.title, border_style="cyan"))
+    existing_files = read_extension_files(ctx.project)
+    for path, diff_text in render_diff(proposal, existing_files):
+        console.print(Panel(Syntax(diff_text, "diff"), title=path, border_style="yellow"))
+
+    if not await _confirm("Apply this proposal? [y/N] "):
+        console.print("Discarded.", style="muted")
+        return True
+
+    try:
+        apply_crystallization(ctx.project, proposal)
+    except (RuntimeError, ValueError) as exc:
+        print_error(str(exc))
+        return True
+
+    console.print("Proposal applied; reloading...", style="success")
+    return await _reload(ctx, [])
+
+
+@default_commands.register("cost", "Show this session's per-turn cost/token breakdown.")
+def _cost(ctx: CLIContext, args: list[str]) -> bool:
+    if ctx.project.monitoring_store is None or ctx.session_id is None:
+        console.print("Monitoring isn't configured for this project.", style="muted")
+        return True
+    turns = ctx.project.monitoring_store.list_turns(ctx.session_id)
+    render_result(turn_rows(turns))
     return True

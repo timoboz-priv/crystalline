@@ -1,0 +1,135 @@
+import asyncio
+
+import pytest
+
+from crystalline.crystallization import CrystallizationContext, SessionReplayPlugin
+from crystalline.monitoring import Session, SessionEvent, Turn
+
+
+class _StubProject:
+    name = "demo"
+    schema = ["Order"]
+    tools = []
+    skills = []
+    extensions_dir = None
+
+
+class _FakeAgent:
+    def __init__(self, responses: list[str]) -> None:
+        self._responses = list(responses)
+        self.prompts: list[str] = []
+
+    async def run(self, prompt: str) -> str:
+        self.prompts.append(prompt)
+        return self._responses.pop(0)
+
+
+def _ctx(agent: _FakeAgent) -> CrystallizationContext:
+    return CrystallizationContext(
+        project=_StubProject(),
+        session=Session(id="s1", project_name="demo"),
+        turns=[Turn(id="t1", session_id="s1")],
+        events=[
+            SessionEvent(
+                session_id="s1", turn_id="t1", kind="tool_call", data={"name": "total_revenue"}
+            )
+        ],
+        agent=agent,
+    )
+
+
+_VALID_RESPONSE = """TITLE: Dashboard skill
+FILE: skill_dashboard.py
+ACTION: create
+```python
+def build_skill(project):
+    pass
+```
+RATIONALE:
+Chains total_revenue and list_customer into one skill.
+"""
+
+_MULTI_FILE_RESPONSE = """TITLE: Dashboard skill + helper tool
+FILE: skill_dashboard.py
+ACTION: create
+```python
+def build_skill(project):
+    pass
+```
+FILE: tool_helper.py
+ACTION: modify
+```python
+def build_tool(project):
+    pass
+```
+RATIONALE:
+Needs a new skill plus a tweak to an existing tool.
+"""
+
+_NOTHING_RESPONSE = "NOTHING: already covered by the existing place_order skill"
+
+_MISSING_RATIONALE_RESPONSE = """TITLE: Oops
+FILE: skill_x.py
+ACTION: create
+```python
+x = 1
+```
+"""
+
+_SYNTAX_ERROR_RESPONSE = """TITLE: Broken
+FILE: skill_broken.py
+ACTION: create
+```python
+def build_skill(project)
+    pass
+```
+RATIONALE:
+This one is syntactically broken.
+"""
+
+
+def test_parses_a_valid_single_file_proposal():
+    agent = _FakeAgent([_VALID_RESPONSE])
+    proposal = asyncio.run(SessionReplayPlugin().propose(_ctx(agent)))
+    assert proposal is not None
+    assert proposal.plugin == "session"
+    assert proposal.title == "Dashboard skill"
+    [change] = proposal.changes
+    assert change.path == "skill_dashboard.py"
+    assert change.action == "create"
+    assert "build_skill" in change.content
+
+
+def test_parses_multiple_file_blocks():
+    agent = _FakeAgent([_MULTI_FILE_RESPONSE])
+    proposal = asyncio.run(SessionReplayPlugin().propose(_ctx(agent)))
+    assert proposal is not None
+    assert [c.path for c in proposal.changes] == ["skill_dashboard.py", "tool_helper.py"]
+    assert proposal.changes[1].action == "modify"
+
+
+def test_nothing_response_returns_none():
+    agent = _FakeAgent([_NOTHING_RESPONSE])
+    proposal = asyncio.run(SessionReplayPlugin().propose(_ctx(agent)))
+    assert proposal is None
+
+
+def test_malformed_response_is_retried_then_succeeds():
+    agent = _FakeAgent([_MISSING_RATIONALE_RESPONSE, _VALID_RESPONSE])
+    proposal = asyncio.run(SessionReplayPlugin().propose(_ctx(agent)))
+    assert proposal is not None
+    assert len(agent.prompts) == 2
+    assert "previous response had a problem" in agent.prompts[1]
+
+
+def test_malformed_response_twice_raises():
+    agent = _FakeAgent([_MISSING_RATIONALE_RESPONSE, _MISSING_RATIONALE_RESPONSE])
+    with pytest.raises(ValueError):
+        asyncio.run(SessionReplayPlugin().propose(_ctx(agent)))
+
+
+def test_syntax_error_in_generated_code_is_rejected_and_retried():
+    agent = _FakeAgent([_SYNTAX_ERROR_RESPONSE, _VALID_RESPONSE])
+    proposal = asyncio.run(SessionReplayPlugin().propose(_ctx(agent)))
+    assert proposal is not None
+    assert len(agent.prompts) == 2

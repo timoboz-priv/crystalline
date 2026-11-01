@@ -217,7 +217,16 @@ def test_receive_result_message_ends_the_turn_not_an_event(store):
 
     events = store.list_events(turn_id=turn_id)
     assert all(e.kind != "message" for e in events)
-    assert len(events) == 1  # just the initial user_message
+    # user_message, then turn_result mirroring the same outcome end_turn got.
+    assert [e.kind for e in events] == ["user_message", "turn_result"]
+    assert events[-1].data == {
+        "status": "completed",
+        "duration_ms": 100,
+        "total_cost_usd": 0.01,
+        "usage": {"input_tokens": 10},
+        "result": "done",
+        "errors": None,
+    }
 
 
 def test_receive_result_message_with_is_error_marks_turn_errored(store):

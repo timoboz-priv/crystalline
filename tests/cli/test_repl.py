@@ -6,6 +6,7 @@ from typing import Any
 from claude_agent_sdk import AssistantMessage, TextBlock
 
 from crystalline.agents import Agent, TextChunk, ToolCallChunk
+from crystalline.cli.commands import CLIContext, default_commands
 from crystalline.cli.repl import _status_toolbar, run_repl
 from crystalline.project import Project
 
@@ -196,9 +197,13 @@ def test_history_includes_itself_as_the_latest_entry(monkeypatch, capsys):
     assert "(empty)" not in out
 
 
+def _ctx_for(project: Project) -> CLIContext:
+    return CLIContext(project=project, agent=object(), commands=default_commands)
+
+
 def test_status_toolbar_starts_with_two_space_indent():
     project = Project("demo-shop", "0.1.0")
-    toolbar = _status_toolbar(project)
+    toolbar = _status_toolbar(_ctx_for(project))
 
     style, text = toolbar[0]
     assert style == "class:bottom-toolbar"
@@ -207,7 +212,7 @@ def test_status_toolbar_starts_with_two_space_indent():
 
 def test_status_toolbar_highlights_project_segment():
     project = Project("demo-shop", "0.1.0")
-    toolbar = _status_toolbar(project)
+    toolbar = _status_toolbar(_ctx_for(project))
 
     style, text = toolbar[1]
     assert style == "class:statusbar.project"

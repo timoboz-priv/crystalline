@@ -357,6 +357,7 @@ def test_loads_demo_shop_example(tmp_path):
             customer_id="c1",
             items=[{"product_id": "p1", "count": 1, "subtotal": 9.99}],
             total=9.99,
+            placed_at="2026-01-01T00:00:00Z",
         )
         assert order.total == 9.99
         assert order.items[0].product_id == "p1"

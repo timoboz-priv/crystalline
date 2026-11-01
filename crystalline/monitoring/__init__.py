@@ -4,6 +4,7 @@ from .session import (
     EVENT_KIND_ROUTE_DECISION,
     EVENT_KIND_TOOL_CALL,
     EVENT_KIND_TOOL_RESULT,
+    EVENT_KIND_TURN_RESULT,
     EVENT_KIND_USER_MESSAGE,
     TURN_STATUS_COMPLETED,
     TURN_STATUS_ERROR,
@@ -12,6 +13,7 @@ from .session import (
     SessionEvent,
     Turn,
 )
+from .reporting import session_cost_total, turn_rows
 from .sqlite import SQLiteSessionStore
 from .store import SessionStore
 
@@ -26,8 +28,11 @@ __all__ = [
     "EVENT_KIND_ASSISTANT_TEXT",
     "EVENT_KIND_TOOL_CALL",
     "EVENT_KIND_TOOL_RESULT",
+    "EVENT_KIND_TURN_RESULT",
     "EVENT_KIND_MESSAGE",
     "TURN_STATUS_IN_PROGRESS",
     "TURN_STATUS_COMPLETED",
     "TURN_STATUS_ERROR",
+    "session_cost_total",
+    "turn_rows",
 ]

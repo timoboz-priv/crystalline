@@ -15,6 +15,12 @@ from .agent import (
     register_agent_backend,
 )
 from .agent_wiring import system_prompt_for, wire_tools
+from .crystallization_wiring import (
+    apply_crystallization,
+    build_crystallization_registry,
+    read_extension_files,
+    run_crystallization,
+)
 from .describe import describe_project
 from .extensions import (
     apply_extensions,
@@ -85,4 +91,8 @@ __all__ = [
     "claude_turn_outcome",
     "start_monitoring_session",
     "end_monitoring_session",
+    "build_crystallization_registry",
+    "run_crystallization",
+    "apply_crystallization",
+    "read_extension_files",
 ]

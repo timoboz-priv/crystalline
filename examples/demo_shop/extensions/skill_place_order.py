@@ -15,6 +15,7 @@ Convention: one skill per file, named `skill_*.py`, with a
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from typing import Any
 
 from crystalline.project import Project
@@ -66,6 +67,7 @@ def build_skill(project: Project) -> Skill:
                 customer_id=data.customer_id,
                 items=line_items,
                 total=total,
+                placed_at=datetime.now(timezone.utc),
             )
         )
 

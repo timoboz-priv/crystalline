@@ -67,6 +67,7 @@ from crystalline.monitoring import (
     EVENT_KIND_ROUTE_DECISION,
     EVENT_KIND_TOOL_CALL,
     EVENT_KIND_TOOL_RESULT,
+    EVENT_KIND_TURN_RESULT,
     EVENT_KIND_USER_MESSAGE,
     TURN_STATUS_COMPLETED,
     TURN_STATUS_ERROR,
@@ -359,6 +360,14 @@ class MonitoredAgent(Agent):
         async for message in self._inner.receive():
             outcome = self._turn_outcome_extractor(message)
             if outcome is not None and self._current_turn_id is not None:
+                self._store.append_event(
+                    SessionEvent(
+                        session_id=self._session_id,
+                        turn_id=self._current_turn_id,
+                        kind=EVENT_KIND_TURN_RESULT,
+                        data=outcome,
+                    )
+                )
                 self._store.end_turn(self._current_turn_id, **outcome)
             elif self._current_turn_id is not None:
                 for kind, data in self._message_recorder(message):
