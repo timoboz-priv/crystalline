@@ -32,6 +32,13 @@ storage:
 agent:
   type: claude_code
   model: claude-sonnet-5
+  # Confines the agent's filesystem-backed tools (Read/Write/Bash, ...) to
+  # this project's own directory — resolved against this file's directory
+  # (crystalline.project.agent.resolve_agent_paths), not wherever the CLI
+  # process happens to be launched from. Without this, running the CLI
+  # from the framework's own repo root would let the agent see (and in
+  # "user mode" shouldn't be able to touch) the framework's source tree.
+  cwd: .
 # Records every session/turn/event (crystalline.monitoring) into its own
 # sqlite file next to demo_shop.db — build_agent() wraps the agent in a
 # MonitoredAgent automatically whenever this section is present; omit it

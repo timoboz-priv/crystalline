@@ -197,6 +197,58 @@ def test_agent_config_round_trips(tmp_path):
     assert reloaded.agent_config == {"type": "claude_code", "model": "claude-sonnet-5-5"}
 
 
+def test_relative_agent_cwd_resolves_against_project_file_dir(tmp_path):
+    project_dir = tmp_path / "nested" / "dir"
+    project_dir.mkdir(parents=True)
+    project_file = project_dir / "project.yaml"
+    project_file.write_text(
+        "name: demo\nversion: '0.1.0'\nschema: {}\n"
+        "agent:\n  type: claude_code\n  cwd: .\nproperties: {}\n"
+    )
+
+    project = load_project(project_file)
+    assert project.agent_config == {"type": "claude_code", "cwd": str(project_dir)}
+
+
+def test_relative_agent_cwd_round_trips_through_save(tmp_path):
+    project_dir = tmp_path / "nested"
+    project_dir.mkdir()
+    project_file = project_dir / "project.yaml"
+    project_file.write_text(
+        "name: demo\nversion: '0.1.0'\nschema: {}\n"
+        "agent:\n  type: claude_code\n  cwd: workspace\nproperties: {}\n"
+    )
+
+    project = load_project(project_file)
+    assert project.agent_config["cwd"] == str(project_dir / "workspace")
+    save_project(project, project_file)
+
+    saved_text = project_file.read_text()
+    assert "cwd: workspace" in saved_text
+    assert str(project_dir) not in saved_text
+
+    reloaded = load_project(project_file)
+    assert reloaded.agent_config["cwd"] == str(project_dir / "workspace")
+
+
+def test_agent_cwd_outside_save_dir_stays_absolute(tmp_path):
+    project_dir = tmp_path / "nested"
+    project_dir.mkdir()
+    elsewhere_dir = tmp_path / "elsewhere"
+    elsewhere_dir.mkdir()
+    project_file = project_dir / "project.yaml"
+    project_file.write_text(
+        "name: demo\nversion: '0.1.0'\nschema: {}\n"
+        f"agent:\n  type: claude_code\n  cwd: {elsewhere_dir}\nproperties: {{}}\n"
+    )
+
+    project = load_project(project_file)
+    save_project(project, project_file)
+
+    saved_text = project_file.read_text()
+    assert str(elsewhere_dir) in saved_text
+
+
 def test_extensions_section_resolves_relative_to_project_file(tmp_path):
     project_dir = tmp_path / "nested"
     project_dir.mkdir()

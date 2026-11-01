@@ -95,12 +95,22 @@ SDK's session-resumption feature).
   - `storage`/`agent`/`monitoring` config sections (`{type: ..., ...}`)
     each have a `build_x`/`describe_x`/`register_x_backend` adapter
     (`crystalline.project.storage`/`.agent`/`.monitoring_config`). A
-    relative `path` resolves against the project *file's* directory, not
-    the CWD. `monitoring:` has no always-on default (unlike `storage:`)
-    — omitting it means `Project.monitoring_store` is `None`.
-    `register_storage_backend` optionally takes `storage_cls`/`describe`
-    so a custom backend can round-trip through `describe_storage` (for
-    `save_project`), not just be built.
+    relative `path` (storage/monitoring) or `cwd` (agent) resolves
+    against the project *file's* directory, not the CWD —
+    `crystalline.project.agent.resolve_agent_paths` is the `cwd`
+    counterpart to `storage.resolve_storage_paths`, wired into
+    `project_from_dict`/`project_to_dict` the same way. Without an
+    explicit `cwd`, a `claude_code` agent's filesystem tools default to
+    the *process's* cwd — set it (see `examples/demo_shop/project.yaml`,
+    `cwd: .`) to confine a project's agent to its own directory instead
+    of wherever the CLI happened to be launched from (e.g. this repo's
+    root, which would otherwise expose the whole framework source tree
+    to a project meant to run in "user mode"). `monitoring:` has no
+    always-on default (unlike `storage:`) — omitting it means
+    `Project.monitoring_store` is `None`. `register_storage_backend`
+    optionally takes `storage_cls`/`describe` so a custom backend can
+    round-trip through `describe_storage` (for `save_project`), not just
+    be built.
   - `build_agent(project, *, session_id=None)` constructs the real
     `Agent` (tools/system-prompt wired via `agent_wiring`), wrapped in a
     `MonitoredAgent` if `monitoring_store` is set — it never itself

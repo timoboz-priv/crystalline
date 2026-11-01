@@ -15,6 +15,7 @@ CLI, eventually the router) is actually about to start a session.
 from __future__ import annotations
 
 from collections.abc import Callable
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from crystalline.agents import Agent, ClaudeCodeAgent
@@ -46,9 +47,40 @@ def build_agent_config(config: dict[str, Any] | None) -> dict[str, Any]:
     return dict(config)
 
 
-def describe_agent_config(config: dict[str, Any]) -> dict[str, Any]:
-    """Inverse of `build_agent_config`, for saving a project back out."""
-    return dict(config)
+def resolve_agent_paths(config: dict[str, Any], base_dir: Path) -> dict[str, Any]:
+    """Resolve a relative `cwd` property against `base_dir` (the project
+    file's directory), same convention as `crystalline.project.storage.
+    resolve_storage_paths`'s `path` — so a project's agent is confined to
+    a directory relative to the project file, not to wherever the
+    process launching the CLI happens to have its own cwd. Without this,
+    a `ClaudeCodeAgent`'s filesystem-backed tools (Read/Write/Bash, ...)
+    default to the *process's* cwd, which for a project meant to be run
+    in "user mode" (not from within this repo) could be the whole
+    framework source tree rather than just that project's own files."""
+    config = dict(config)
+    cwd = config.get("cwd")
+    if isinstance(cwd, str) and not Path(cwd).is_absolute():
+        config["cwd"] = str(base_dir / cwd)
+    return config
+
+
+def describe_agent_config(
+    config: dict[str, Any], base_dir: Path | None = None
+) -> dict[str, Any]:
+    """Inverse of `build_agent_config`, for saving a project back out.
+
+    `cwd` is always absolute (`resolve_agent_paths` resolved it that way
+    on load) — when `base_dir` (the directory the project file is being
+    saved *to*) is given and `cwd` sits under it, write it back out
+    relative to `base_dir`, the same convention `load_project` reads it
+    with (mirrors `crystalline.project.storage.describe_storage`)."""
+    config = dict(config)
+    cwd = config.get("cwd")
+    if base_dir is not None and isinstance(cwd, str):
+        absolute = Path(cwd)
+        if absolute.is_absolute() and absolute.is_relative_to(base_dir):
+            config["cwd"] = str(absolute.relative_to(base_dir))
+    return config
 
 
 def build_agent(

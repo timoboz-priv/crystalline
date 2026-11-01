@@ -14,7 +14,7 @@ import yaml
 
 from crystalline.security import RESERVED_TYPE_NAMES
 
-from .agent import build_agent_config, describe_agent_config
+from .agent import build_agent_config, describe_agent_config, resolve_agent_paths
 from .extensions import resolve_extensions_dir
 from .fields import build_model_from_field_spec, field_spec_from_model
 from .monitoring_config import build_monitoring_store, describe_monitoring_store
@@ -35,7 +35,7 @@ def project_to_dict(project: Project, *, base_dir: Path | None = None) -> dict[s
         },
         "storage": describe_storage(project.storage, base_dir=base_dir),
         "security": describe_security_policy(project.security),
-        "agent": describe_agent_config(project.agent_config),
+        "agent": describe_agent_config(project.agent_config, base_dir=base_dir),
         "extensions": project.extensions_dir,
         "monitoring": describe_monitoring_store(project.monitoring_store, base_dir=base_dir),
         "properties": project.properties,
@@ -45,8 +45,9 @@ def project_to_dict(project: Project, *, base_dir: Path | None = None) -> dict[s
 def project_from_dict(data: dict[str, Any], *, base_dir: Path | None = None) -> Project:
     """`base_dir` (the project file's directory, when loading from one)
     is used to resolve a relative storage `path`, a relative `monitoring`
-    `path`, and a relative `extensions:` directory, against the file
-    rather than the process's current working directory."""
+    `path`, a relative `extensions:` directory, and a relative agent
+    `cwd`, against the file rather than the process's current working
+    directory."""
     storage_config = data.get("storage")
     if storage_config is not None and base_dir is not None:
         storage_config = resolve_storage_paths(storage_config, base_dir)
@@ -55,13 +56,17 @@ def project_from_dict(data: dict[str, Any], *, base_dir: Path | None = None) -> 
     if monitoring_config is not None and base_dir is not None:
         monitoring_config = resolve_storage_paths(monitoring_config, base_dir)
 
+    agent_config = data.get("agent")
+    if agent_config is not None and base_dir is not None:
+        agent_config = resolve_agent_paths(agent_config, base_dir)
+
     project = Project(
         name=data["name"],
         version=data["version"],
         description=data.get("description"),
         storage=build_storage(storage_config),
         security=build_security_policy(data.get("security")),
-        agent_config=build_agent_config(data.get("agent")),
+        agent_config=build_agent_config(agent_config),
         extensions_dir=resolve_extensions_dir(data.get("extensions"), base_dir),
         monitoring_store=build_monitoring_store(monitoring_config),
     )

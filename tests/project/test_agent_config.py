@@ -1,7 +1,9 @@
+from pathlib import Path
+
 from crystalline.agents import Agent, ClaudeCodeAgent
 from crystalline.monitoring import SQLiteSessionStore
 from crystalline.project import Project, build_agent, build_agent_config, describe_agent_config
-from crystalline.project.agent import register_agent_backend
+from crystalline.project.agent import register_agent_backend, resolve_agent_paths
 from crystalline.project.fields import build_model_from_field_spec
 from crystalline.project.monitoring_wiring import MonitoredAgent
 
@@ -19,6 +21,35 @@ def test_build_agent_config_passthrough():
 def test_describe_agent_config_round_trips():
     config = {"type": "claude_code", "model": "claude-sonnet-5-5"}
     assert describe_agent_config(build_agent_config(config)) == config
+
+
+def test_resolve_agent_paths_leaves_relative_cwd_untouched_without_absolute_dir():
+    config = resolve_agent_paths({"type": "claude_code", "cwd": "work"}, Path("/base"))
+    assert config["cwd"] == str(Path("/base/work"))
+
+
+def test_resolve_agent_paths_leaves_absolute_cwd_untouched():
+    config = resolve_agent_paths({"type": "claude_code", "cwd": "/elsewhere"}, Path("/base"))
+    assert config["cwd"] == "/elsewhere"
+
+
+def test_resolve_agent_paths_without_cwd_is_a_no_op():
+    config = resolve_agent_paths({"type": "claude_code", "model": "x"}, Path("/base"))
+    assert config == {"type": "claude_code", "model": "x"}
+
+
+def test_describe_agent_config_relativizes_cwd_under_base_dir():
+    config = describe_agent_config(
+        {"type": "claude_code", "cwd": "/base/work"}, base_dir=Path("/base")
+    )
+    assert config["cwd"] == "work"
+
+
+def test_describe_agent_config_leaves_cwd_outside_base_dir_absolute():
+    config = describe_agent_config(
+        {"type": "claude_code", "cwd": "/elsewhere"}, base_dir=Path("/base")
+    )
+    assert config["cwd"] == "/elsewhere"
 
 
 def test_project_defaults_to_claude_code_agent_config():
@@ -46,6 +77,15 @@ def test_build_agent_constructs_claude_code_agent_with_model():
     assert agent.model == "claude-sonnet-5-5"
     assert "demo" in agent.system_prompt
     assert any(t.name == "create_customer" for t in agent.tools)
+
+
+def test_build_agent_passes_cwd_through_to_claude_code_agent():
+    project = Project(
+        "demo", "0.1.0", agent_config={"type": "claude_code", "cwd": "/some/workspace"}
+    )
+    agent = build_agent(project)
+    assert isinstance(agent, ClaudeCodeAgent)
+    assert agent.cwd == "/some/workspace"
 
 
 def test_build_agent_without_monitoring_store_is_unwrapped():
