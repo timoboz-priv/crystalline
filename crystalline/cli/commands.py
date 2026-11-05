@@ -12,7 +12,7 @@ from rich.panel import Panel
 from rich.syntax import Syntax
 
 from crystalline.agents import Agent
-from crystalline.crystallization import render_diff
+from crystalline.crystallization import render_diff, summarize_changes
 from crystalline.monitoring import turn_rows
 from crystalline.project import (
     Project,
@@ -349,12 +349,16 @@ async def _roles(ctx: CLIContext, args: list[str]) -> bool:
     return True
 
 
-async def _confirm(message: str) -> bool:
-    """`y`/`yes` (case-insensitive) -> True, anything else -> False.
-    Factored out (rather than inlined in `_crystallize`) so tests can
-    monkeypatch `commands._confirm` instead of feeding real stdin."""
-    answer = await asyncio.to_thread(console.input, message)
-    return answer.strip().lower() in ("y", "yes")
+async def _prompt_choice(message: str, choices: dict[str, str]) -> str:
+    """Prompt until the user types one of `choices`'s keys (a short code,
+    e.g. `"a"` for `{"a": "Apply", ...}`), case-insensitively. Factored
+    out (rather than inlined in `_crystallize`) so tests can monkeypatch
+    `commands._prompt_choice` instead of feeding real stdin."""
+    while True:
+        answer = (await asyncio.to_thread(console.input, message)).strip().lower()
+        if answer in choices:
+            return answer
+        console.print(f"Please enter one of: {', '.join(sorted(choices))}", style="muted")
 
 
 _crystallization_registry = build_crystallization_registry()
@@ -391,14 +395,32 @@ async def _crystallize(ctx: CLIContext, args: list[str]) -> bool:
         console.print("Nothing to crystallize.", style="muted")
         return True
 
-    console.print(Panel(proposal.rationale, title=proposal.title, border_style="cyan"))
     existing_files = read_extension_files(ctx.project)
-    for path, diff_text in render_diff(proposal, existing_files):
-        console.print(Panel(Syntax(diff_text, "diff"), title=path, border_style="yellow"))
+    console.print(Panel(proposal.rationale, title=proposal.title, border_style="cyan"))
+    render_result(summarize_changes(proposal, existing_files))
 
-    if not await _confirm("Apply this proposal? [y/N] "):
-        console.print("Discarded.", style="muted")
-        return True
+    expanded = False
+    while True:
+        choices = (
+            {"a": "Apply", "r": "Reject", "c": "Collapse diff"}
+            if expanded
+            else {"a": "Apply", "r": "Reject", "e": "Expand diff"}
+        )
+        prompt = " / ".join(f"{label} [{code}]" for code, label in choices.items()) + "? "
+        choice = await _prompt_choice(prompt, choices)
+
+        if choice == "e":
+            for path, diff_text in render_diff(proposal, existing_files):
+                console.print(Panel(Syntax(diff_text, "diff"), title=path, border_style="yellow"))
+            expanded = True
+            continue
+        if choice == "c":
+            expanded = False
+            continue
+        if choice == "r":
+            console.print("Discarded.", style="muted")
+            return True
+        break  # choice == "a"
 
     try:
         apply_crystallization(ctx.project, proposal)

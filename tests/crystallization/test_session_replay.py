@@ -40,6 +40,7 @@ def _ctx(agent: _FakeAgent) -> CrystallizationContext:
 
 _VALID_RESPONSE = """TITLE: Dashboard skill
 FILE: skill_dashboard.py
+KIND: skill
 ACTION: create
 ```python
 def build_skill(project):
@@ -51,12 +52,14 @@ Chains total_revenue and list_customer into one skill.
 
 _MULTI_FILE_RESPONSE = """TITLE: Dashboard skill + helper tool
 FILE: skill_dashboard.py
+KIND: skill
 ACTION: create
 ```python
 def build_skill(project):
     pass
 ```
 FILE: tool_helper.py
+KIND: tool
 ACTION: modify
 ```python
 def build_tool(project):
@@ -70,6 +73,7 @@ _NOTHING_RESPONSE = "NOTHING: already covered by the existing place_order skill"
 
 _MISSING_RATIONALE_RESPONSE = """TITLE: Oops
 FILE: skill_x.py
+KIND: skill
 ACTION: create
 ```python
 x = 1
@@ -78,6 +82,7 @@ x = 1
 
 _SYNTAX_ERROR_RESPONSE = """TITLE: Broken
 FILE: skill_broken.py
+KIND: skill
 ACTION: create
 ```python
 def build_skill(project)
@@ -85,6 +90,32 @@ def build_skill(project)
 ```
 RATIONALE:
 This one is syntactically broken.
+"""
+
+_KIND_FILENAME_MISMATCH_RESPONSE = """TITLE: Dashboard tool
+FILE: tool_dashboard.py
+KIND: skill
+ACTION: create
+```python
+def build_skill(project):
+    pass
+```
+RATIONALE:
+Declares KIND: skill but keeps the tool_ filename.
+"""
+
+_TOOL_CHAINING_MULTIPLE_TOOLS_RESPONSE = """TITLE: Dashboard tool
+FILE: tool_dashboard.py
+KIND: tool
+ACTION: create
+```python
+async def dashboard(data):
+    customers = await list_customer.invoke(list_customer.input_model())
+    products = await list_product.invoke(list_product.input_model())
+    return {"customers": customers, "products": products}
+```
+RATIONALE:
+Wrongly labeled a Tool even though it chains two other tools' .invoke().
 """
 
 
@@ -133,3 +164,19 @@ def test_syntax_error_in_generated_code_is_rejected_and_retried():
     proposal = asyncio.run(SessionReplayPlugin().propose(_ctx(agent)))
     assert proposal is not None
     assert len(agent.prompts) == 2
+
+
+def test_kind_filename_mismatch_is_rejected_and_retried():
+    agent = _FakeAgent([_KIND_FILENAME_MISMATCH_RESPONSE, _VALID_RESPONSE])
+    proposal = asyncio.run(SessionReplayPlugin().propose(_ctx(agent)))
+    assert proposal is not None
+    assert len(agent.prompts) == 2
+    assert "KIND: skill" in agent.prompts[1]
+
+
+def test_tool_chaining_multiple_tool_invokes_is_rejected_and_retried():
+    agent = _FakeAgent([_TOOL_CHAINING_MULTIPLE_TOOLS_RESPONSE, _VALID_RESPONSE])
+    proposal = asyncio.run(SessionReplayPlugin().propose(_ctx(agent)))
+    assert proposal is not None
+    assert len(agent.prompts) == 2
+    assert "makes this a Skill" in agent.prompts[1]

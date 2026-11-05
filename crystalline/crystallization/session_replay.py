@@ -24,10 +24,13 @@ _MAX_RETRIES = 1
 
 _FILE_BLOCK_RE = re.compile(
     r"FILE:\s*(?P<path>[^\n]+)\n"
+    r"KIND:\s*(?P<kind>tool|skill)\s*\n"
     r"ACTION:\s*(?P<action>create|modify|delete)\s*\n"
     r"(?:```python\n(?P<code>.*?)\n```\n?)?",
     re.DOTALL,
 )
+
+_INVOKE_RE = re.compile(r"\b(\w+)\.invoke\(")
 
 
 class _MalformedResponse(Exception):
@@ -91,15 +94,21 @@ Session transcript (route decisions, user messages, tool calls/results,
 assistant text, in order):
 {_session_transcript(ctx.turns, ctx.events)}
 
-Task: if this session shows a repeated or multi-step tool-chaining pattern
-worth crystallizing, write ONE new or modified extension file for it — a
-`skill_*.py` with a `build_skill(project) -> Skill` function (see
-`crystalline.skills.Skill`), or a `tool_*.py` with `build_tool(project) ->
-Tool`, following the exact style of the existing files shown above: call
-other tools via `project.tools.get_tool(name).invoke(input_model(...))`,
-never a raw handler. If something already in the catalog above fully
-covers this pattern, or the session has nothing worth automating, propose
-nothing.
+Task: first decide, per file, what this session's pattern actually needs —
+don't default to a Tool:
+- Nothing, if something already in the catalog above fully covers this
+  pattern, or the session has nothing repeatable worth automating.
+- A Tool (`tool_*.py`, `build_tool(project) -> Tool`) only if the new
+  capability is ONE atomic operation (typically a single `Storage` call).
+- A Skill (`skill_*.py`, `build_skill(project) -> Skill`, see
+  `crystalline.skills.Skill`) if the handler orchestrates two or more other
+  tool calls (via their own `.invoke()`) or agentic steps. Chaining several
+  existing tools together — like this session's own tool-calling pattern —
+  is a Skill, never a Tool wearing a tool's filename.
+Follow the exact style of the existing files shown above: call other tools
+via `project.tools.get_tool(name).invoke(input_model(...))`, never a raw
+handler. The file's `tool_`/`skill_` prefix must match the KIND you declare
+below, and must match what the handler actually does.
 
 Respond in EXACTLY this format, nothing else:
 
@@ -109,13 +118,15 @@ NOTHING: <one-line reason>
 Otherwise:
 TITLE: <short title>
 FILE: <filename, e.g. skill_dashboard.py>
+KIND: <tool|skill>
 ACTION: <create|modify|delete>
 ```python
 <full file content, omit the python fence and this block entirely if ACTION is delete>
 ```
-(repeat FILE/ACTION/code for additional files if needed)
+(repeat FILE/KIND/ACTION/code for additional files if needed)
 RATIONALE:
-<why this crystallizes the session, and what (if anything) it reuses>
+<why this crystallizes the session, why this KIND is the right one, and
+what (if anything) it reuses>
 """
     if retry_error is not None:
         prompt += f"\n\nYour previous response had a problem: {retry_error}\nTry again, following the format exactly."
@@ -135,8 +146,14 @@ def _parse_response(plugin_name: str, text: str) -> CrystallizationProposal | No
     changes: list[FileChange] = []
     for match in _FILE_BLOCK_RE.finditer(text):
         path = match.group("path").strip()
+        kind = match.group("kind")
         action = match.group("action")
         code = match.group("code")
+        if not path.startswith(f"{kind}_"):
+            raise _MalformedResponse(
+                f"FILE {path} declared KIND: {kind}, but its filename must start "
+                f"with {kind + '_'!r} to match"
+            )
         if action == "delete":
             changes.append(FileChange(path=path, action=action, content=None))
             continue
@@ -146,6 +163,14 @@ def _parse_response(plugin_name: str, text: str) -> CrystallizationProposal | No
             compile(code, path, "exec")
         except SyntaxError as exc:
             raise _MalformedResponse(f"FILE {path} has a Python syntax error: {exc}") from exc
+        invoked_tools = set(_INVOKE_RE.findall(code)) - {"self"}
+        if kind == "tool" and len(invoked_tools) >= 2:
+            raise _MalformedResponse(
+                f"FILE {path} is declared KIND: tool, but its handler calls .invoke() "
+                f"on {len(invoked_tools)} different tools ({', '.join(sorted(invoked_tools))}) "
+                "— orchestrating multiple tool calls makes this a Skill "
+                "(skill_*.py, build_skill), not a Tool"
+            )
         changes.append(FileChange(path=path, action=action, content=code))
 
     if not changes:

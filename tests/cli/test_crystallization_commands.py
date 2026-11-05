@@ -106,10 +106,10 @@ def test_crystallize_rejecting_the_proposal_writes_nothing(tmp_path, capsys, mon
 
     _patch_run_crystallization(monkeypatch, commands_module)
 
-    async def fake_confirm(message: str) -> bool:
-        return False
+    async def fake_prompt_choice(message: str, choices: dict[str, str]) -> str:
+        return "r"
 
-    monkeypatch.setattr(commands_module, "_confirm", fake_confirm)
+    monkeypatch.setattr(commands_module, "_prompt_choice", fake_prompt_choice)
 
     project = _project_with_monitoring(tmp_path)
     ctx = CLIContext(
@@ -122,15 +122,70 @@ def test_crystallize_rejecting_the_proposal_writes_nothing(tmp_path, capsys, mon
     assert not Path(project.extensions_dir, "skill_dashboard.py").exists()
 
 
+def test_crystallize_shows_condensed_summary_before_prompting(tmp_path, capsys, monkeypatch):
+    from crystalline.cli import commands as commands_module
+
+    _patch_run_crystallization(monkeypatch, commands_module)
+
+    async def fake_prompt_choice(message: str, choices: dict[str, str]) -> str:
+        return "r"
+
+    monkeypatch.setattr(commands_module, "_prompt_choice", fake_prompt_choice)
+
+    project = _project_with_monitoring(tmp_path)
+    ctx = CLIContext(
+        project=project, agent=object(), commands=default_commands, session_id="s1"
+    )
+    command = default_commands.get("crystallize")
+    assert asyncio.run(command.handler(ctx, ["session"])) is True
+    out = capsys.readouterr().out
+    # The condensed row (kind inferred from filename, action, size) shows up
+    # before the full unified diff would (full diff isn't shown at all here,
+    # since the fake choice is "r" without ever picking "expand").
+    assert "skill_dashboard.py" in out
+    assert "skill" in out
+    assert "create" in out
+    assert "+1" in out
+    assert "@@" not in out  # no full unified diff hunk header
+
+
+def test_crystallize_expand_then_collapse_then_reject(tmp_path, capsys, monkeypatch):
+    from crystalline.cli import commands as commands_module
+
+    _patch_run_crystallization(monkeypatch, commands_module)
+
+    choices_seen: list[str] = []
+    responses = iter(["e", "c", "r"])
+
+    async def fake_prompt_choice(message: str, choices: dict[str, str]) -> str:
+        choices_seen.append(frozenset(choices))
+        return next(responses)
+
+    monkeypatch.setattr(commands_module, "_prompt_choice", fake_prompt_choice)
+
+    project = _project_with_monitoring(tmp_path)
+    ctx = CLIContext(
+        project=project, agent=object(), commands=default_commands, session_id="s1"
+    )
+    command = default_commands.get("crystallize")
+    assert asyncio.run(command.handler(ctx, ["session"])) is True
+    out = capsys.readouterr().out
+    assert "Discarded." in out
+    assert "@@" in out  # the full diff was shown once, while expanded
+    assert choices_seen[0] == frozenset({"a", "r", "e"})  # starts collapsed
+    assert choices_seen[1] == frozenset({"a", "r", "c"})  # expand -> collapse offered
+    assert choices_seen[2] == frozenset({"a", "r", "e"})  # collapse -> expand offered again
+
+
 def test_crystallize_approving_the_proposal_writes_the_file(tmp_path, capsys, monkeypatch):
     from crystalline.cli import commands as commands_module
 
     _patch_run_crystallization(monkeypatch, commands_module)
 
-    async def fake_confirm(message: str) -> bool:
-        return True
+    async def fake_prompt_choice(message: str, choices: dict[str, str]) -> str:
+        return "a"
 
-    monkeypatch.setattr(commands_module, "_confirm", fake_confirm)
+    monkeypatch.setattr(commands_module, "_prompt_choice", fake_prompt_choice)
 
     project = _project_with_monitoring(tmp_path)
     # No project_path set, so the post-approval /reload attempt fails
