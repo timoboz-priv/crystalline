@@ -378,21 +378,43 @@ no always-on default, unlike `storage:` — no section means
 ### `crystalline.crystallization`
 
 Walks a monitored session's `Turn`/`SessionEvent`s, and proposes new
-`tool_*.py`/`skill_*.py` extension files to cover whatever agentic
-tool-chaining it finds — using `agents` for the actual codegen reasoning.
+`tool_*.py`/`skill_*.py` extension files — optionally alongside new or
+changed schema types those files need — to cover whatever agentic
+tool-chaining it finds, using `agents` for the actual codegen reasoning.
 Trigger and review flow are resolved (see below): manual CLI trigger
 only, always human-in-the-loop, never auto-merged.
 
-**Crystallized output is an extension file, not a new artifact kind.**
-`crystalline.project.extensions` already defines exactly the shape
-needed — a `skill_*.py`/`tool_*.py` file with a `build_tool(project)`/
+**Crystallized output is an extension file (plus, optionally, schema
+changes), not a new artifact kind.** `crystalline.project.extensions`
+already defines exactly the shape needed for the former — a
+`skill_*.py`/`tool_*.py` file with a `build_tool(project)`/
 `build_skill(project)` function, loaded by the existing
-`apply_extensions`/`/reload` machinery. A `CrystallizationProposal`
-(`crystalline/crystallization/models.py`) is just a list of `FileChange`s
-(`create`/`modify`/`delete`, relative to `project.extensions_dir`); "diff"
-means a literal `difflib.unified_diff` of file content
-(`crystallization/diff.py`), and "approve" means writing those files and
-re-running `/reload` — no separate apply/activate mechanism.
+`apply_extensions`/`/reload` machinery. For the latter, a project
+file's own `schema:` section already defines exactly the shape needed —
+a `{field_name: type_expr}` spec, compiled by `crystalline.project.fields`
+(same module a project file's own schema types go through). A
+`CrystallizationProposal` (`crystalline/crystallization/models.py`) is a
+list of `FileChange`s (`create`/`modify`/`delete`, relative to
+`project.extensions_dir`) plus a list of `SchemaChange`s (`type_name`/
+`action`/`field_spec`, landing on `project.schema` instead — a schema
+type is config, not a file). "Diff" means a literal `difflib.unified_diff`
+of file content for a `FileChange`, or of the field spec rendered as
+JSON for a `SchemaChange` (`crystallization/diff.py` never compiles the
+spec into an actual type — that's `apply_crystallization`'s job, once a
+human has approved it). "Approve" means writing the files, registering
+the schema changes onto `project.schema`, persisting those back to the
+project's config file (see below), and re-running `/reload` — no
+separate apply/activate mechanism.
+
+Since `crystalline.crystallization` must not import `crystalline.project`
+itself (the dependency runs the other way — see "Dependency direction"
+above), `SessionReplayPlugin` parses a schema change's `FIELDS:` block
+into a plain `dict` via `json.loads` rather than compiling it with
+`crystalline.project.fields` to validate it up front, the way a
+`FileChange`'s Python content gets `compile()`-checked. That compilation
+(`build_model_from_field_spec`) happens once at apply time instead, in
+`crystallization_wiring.py`, which already depends on `crystalline.project`
+and so can call it freely.
 
 **Plugin architecture.** `CrystallizationPlugin` (`crystallization/
 plugin.py`) is the extension point: `name` (the mode string
@@ -403,11 +425,11 @@ bare one-shot codegen `Agent`. `CrystallizationRegistry` maps mode names
 to plugins (same shape as `crystalline.cli.commands.CommandRegistry`).
 The first (and currently only) plugin, `SessionReplayPlugin` (mode
 `"session"`), mines the *current* CLI session: it prompts the codegen
-agent with the session's transcript, the project's existing
-tools/skills, and the current content of its extension files, explicitly
-instructing it to reuse what already covers part of the pattern rather
-than regenerate it, and to propose nothing if the pattern is already
-fully covered.
+agent with the session's transcript, the project's existing schema
+types/tools/skills, and the current content of its extension files,
+explicitly instructing it to reuse what already covers part of the
+pattern rather than regenerate it, and to propose nothing if the pattern
+is already fully covered.
 
 A plugin only *reads* project state in `propose()` — it never writes.
 Writing an approved proposal to disk is a separate, explicit step
@@ -424,10 +446,18 @@ and (after approval) writes the result.
 
 The CLI's `/crystallize <mode>` command (`crystalline/cli/commands.py`)
 is the only trigger — no cron job. It prints the proposal's title/
-rationale and a syntax-highlighted diff per file, requires an explicit
-`y`/`yes` confirmation (`_confirm`, monkeypatchable in tests), then
-writes the files and re-runs the existing `/reload` command handler.
-Rejecting a proposal writes nothing.
+rationale, a condensed summary row per file/schema change, and (on
+request) a syntax-highlighted diff per change, requires an explicit
+apply/reject choice (`_prompt_choice`, monkeypatchable in tests), then
+calls `apply_crystallization` and re-runs the existing `/reload` command
+handler. Applying a proposal with any `SchemaChange` needs the project's
+file path (`apply_crystallization(..., project_path=ctx.project_path)`)
+to persist the change — a schema type has no `extensions_dir` file of
+its own to land in, and `/reload` immediately re-reads the project
+*file*, so a change that only touched the in-memory `project.schema`
+would vanish right back out on that same reload; `apply_crystallization`
+raises instead of applying it halfway. Rejecting a proposal writes
+nothing.
 
 ### `crystalline.cli` — not one of the ten components
 

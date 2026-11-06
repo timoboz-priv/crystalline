@@ -2,22 +2,36 @@
 plugin — "the agent goes over the session and does it the agentic way".
 
 Looks at the turns/events of one monitored session, the project's
-*current* tools/skills/extension files (so it can reuse instead of
-reinventing), and asks a one-shot codegen agent to write (or modify) one
-`skill_*.py`/`tool_*.py` extension file that deterministically
-reproduces whatever agentic tool-chaining happened — or to say there's
-nothing worth crystallizing, including "already fully covered by an
-existing tool/skill".
+*current* tools/skills/extension files/schema types (so it can reuse
+instead of reinventing), and asks a one-shot codegen agent to write (or
+modify) one `skill_*.py`/`tool_*.py` extension file that deterministically
+reproduces whatever agentic tool-chaining happened — optionally alongside
+new/changed schema types that file's input/output needs — or to say
+there's nothing worth crystallizing, including "already fully covered by
+an existing tool/skill".
+
+Schema-type changes are parsed into plain `SchemaChange` data here (name,
+action, `{field_name: type_expr}` spec) without resolving/compiling the
+field types — that compilation (`build_model_from_field_spec`) lives in
+`crystalline.project.fields`, and this package must not import
+`crystalline.project` at all (it's the dependency the project package's
+own `crystallization_wiring` adapter module depends on, the other way
+around — see `crystalline/crystallization/plugin.py`'s docstring). Real
+validation of the field spec happens at apply time instead, same as a
+hand-typed project file only finds out about a bad type expression when
+it's loaded.
 """
 
 from __future__ import annotations
 
+import json
 import re
 from pathlib import Path
 
 from crystalline.monitoring import SessionEvent, Turn
+from crystalline.security import RESERVED_TYPE_NAMES
 
-from .models import CrystallizationProposal, FileChange
+from .models import CrystallizationProposal, FileChange, SchemaChange
 from .plugin import CrystallizationContext, CrystallizationPlugin
 
 _MAX_RETRIES = 1
@@ -27,6 +41,13 @@ _FILE_BLOCK_RE = re.compile(
     r"KIND:\s*(?P<kind>tool|skill)\s*\n"
     r"ACTION:\s*(?P<action>create|modify|delete)\s*\n"
     r"(?:```python\n(?P<code>.*?)\n```\n?)?",
+    re.DOTALL,
+)
+
+_SCHEMA_BLOCK_RE = re.compile(
+    r"SCHEMA:\s*(?P<name>[^\n]+)\n"
+    r"ACTION:\s*(?P<action>create|modify|delete)\s*\n"
+    r"(?:FIELDS:\s*\n```json\n(?P<fields>.*?)\n```\n?)?",
     re.DOTALL,
 )
 
@@ -43,6 +64,21 @@ def _tool_catalog(project) -> str:
         schema = tool.input_model.model_json_schema().get("properties", {})
         fields = ", ".join(schema) or "(no fields)"
         lines.append(f"- {tool.name} [{tool.group}]: {tool.description} (input: {fields})")
+    return "\n".join(lines) or "(none registered)"
+
+
+def _schema_catalog(project) -> str:
+    # Field *names* only (via pydantic's own `model_json_schema`, not
+    # `crystalline.project.fields.field_spec_from_model` — this package
+    # can't import `crystalline.project`, see this module's docstring) —
+    # enough for the agent to tell whether an existing type already
+    # covers the shape it needs, without resolving every field's type.
+    lines = []
+    for name, model in project.schema.types.items():
+        if name in RESERVED_TYPE_NAMES:
+            continue
+        fields = ", ".join(model.model_json_schema().get("properties", {})) or "(no fields)"
+        lines.append(f"- {name}: {fields}")
     return "\n".join(lines) or "(none registered)"
 
 
@@ -80,7 +116,11 @@ def _build_prompt(ctx: CrystallizationContext, *, retry_error: str | None = None
     prompt = f"""You are crystallization: turning one monitored CLI session's agentic
 tool-chaining into a deterministic `crystalline` extension file.
 
-Project: {ctx.project.name}. Registered schema types: {", ".join(ctx.project.schema)}.
+Project: {ctx.project.name}.
+
+Existing schema types (reuse these by name in a FIELDS spec below instead
+of redeclaring one that already covers the shape you need):
+{_schema_catalog(ctx.project)}
 
 Existing tools/skills (reuse these — don't recreate what already exists):
 {_tool_catalog(ctx.project)}
@@ -110,6 +150,15 @@ via `project.tools.get_tool(name).invoke(input_model(...))`, never a raw
 handler. The file's `tool_`/`skill_` prefix must match the KIND you declare
 below, and must match what the handler actually does.
 
+Also decide whether any file needs a schema type that doesn't already
+exist, or needs an existing one changed — only propose this when the
+tool/skill's input/output genuinely needs a structured shape that isn't
+already covered above; don't invent a type for data that's only ever used
+inline inside one handler. Give a type an `id: str` field only if it
+should be an independently stored entity with its own CRUD tools, not for
+a nested value object (e.g. a line-item type embedded in another type's
+`list[...]` field never needs one).
+
 Respond in EXACTLY this format, nothing else:
 
 If nothing to propose:
@@ -117,6 +166,14 @@ NOTHING: <one-line reason>
 
 Otherwise:
 TITLE: <short title>
+(zero or more, only when a file below needs a schema change)
+SCHEMA: <TypeName>
+ACTION: <create|modify|delete>
+FIELDS:
+```json
+{{"field_name": "type_expr", "other_field": {{"type": "type_expr", "required": false, "default": null}}}}
+```
+(omit the FIELDS block entirely if ACTION is delete; repeat SCHEMA/ACTION/FIELDS for more types — a later block may reference an earlier one's TypeName by name)
 FILE: <filename, e.g. skill_dashboard.py>
 KIND: <tool|skill>
 ACTION: <create|modify|delete>
@@ -125,12 +182,43 @@ ACTION: <create|modify|delete>
 ```
 (repeat FILE/KIND/ACTION/code for additional files if needed)
 RATIONALE:
-<why this crystallizes the session, why this KIND is the right one, and
-what (if anything) it reuses>
+<2-3 sentences max: why this crystallizes the session, why this KIND is the
+right one, and what (if anything) it reuses. No headers, no bullet lists.>
 """
     if retry_error is not None:
         prompt += f"\n\nYour previous response had a problem: {retry_error}\nTry again, following the format exactly."
     return prompt
+
+
+def _parse_schema_changes(text: str) -> list[SchemaChange]:
+    changes: list[SchemaChange] = []
+    for match in _SCHEMA_BLOCK_RE.finditer(text):
+        type_name = match.group("name").strip()
+        action = match.group("action")
+        fields_text = match.group("fields")
+        if type_name in RESERVED_TYPE_NAMES:
+            raise _MalformedResponse(
+                f"SCHEMA {type_name} is a reserved, framework-provided type name"
+            )
+        if action == "delete":
+            changes.append(SchemaChange(type_name=type_name, action=action, field_spec=None))
+            continue
+        if fields_text is None:
+            raise _MalformedResponse(
+                f"SCHEMA {type_name} (ACTION {action}) is missing a FIELDS ```json block"
+            )
+        try:
+            field_spec = json.loads(fields_text)
+        except json.JSONDecodeError as exc:
+            raise _MalformedResponse(
+                f"SCHEMA {type_name} has invalid JSON in its FIELDS block: {exc}"
+            ) from exc
+        if not isinstance(field_spec, dict) or not field_spec:
+            raise _MalformedResponse(
+                f"SCHEMA {type_name}'s FIELDS block must be a non-empty JSON object"
+            )
+        changes.append(SchemaChange(type_name=type_name, action=action, field_spec=field_spec))
+    return changes
 
 
 def _parse_response(plugin_name: str, text: str) -> CrystallizationProposal | None:
@@ -142,6 +230,8 @@ def _parse_response(plugin_name: str, text: str) -> CrystallizationProposal | No
     rationale_match = re.search(r"RATIONALE:\s*(?P<rationale>.*)\Z", text, re.DOTALL)
     if title_match is None or rationale_match is None:
         raise _MalformedResponse("missing TITLE: or RATIONALE: section")
+
+    schema_changes = _parse_schema_changes(text)
 
     changes: list[FileChange] = []
     for match in _FILE_BLOCK_RE.finditer(text):
@@ -181,6 +271,7 @@ def _parse_response(plugin_name: str, text: str) -> CrystallizationProposal | No
         title=title_match.group("title").strip(),
         rationale=rationale_match.group("rationale").strip(),
         changes=changes,
+        schema_changes=schema_changes,
     )
 
 

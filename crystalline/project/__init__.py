@@ -19,6 +19,7 @@ from .crystallization_wiring import (
     apply_crystallization,
     build_crystallization_registry,
     read_extension_files,
+    read_schema_field_specs,
     run_crystallization,
 )
 from .describe import describe_project
@@ -95,4 +96,5 @@ __all__ = [
     "run_crystallization",
     "apply_crystallization",
     "read_extension_files",
+    "read_schema_field_specs",
 ]

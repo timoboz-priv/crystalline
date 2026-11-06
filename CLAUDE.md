@@ -156,14 +156,32 @@ SDK's session-resumption feature).
   `"session"`) is the only one built so far. A proposal is a list of
   `FileChange`s (`create`/`modify`/`delete`) targeting
   `project.extensions_dir` — crystallized output is just another
-  `tool_*.py`/`skill_*.py` extension file, loaded the usual way. The
-  orchestration (gather session data, build/monitor the codegen agent,
-  apply an approved proposal) lives in
+  `tool_*.py`/`skill_*.py` extension file, loaded the usual way — plus a
+  list of `SchemaChange`s (`type_name`/`action`/`field_spec`), for when a
+  generated file's input/output needs a schema type that doesn't exist
+  yet or needs one changed. A `SchemaChange` is config, not a file: it
+  lands on `project.schema` directly, the same `{field: type_expr}` shape
+  `crystalline.project.fields` compiles for a project file's own
+  `schema:` section. **This package must never import `crystalline.project`
+  at all** (not even submodules like `.fields`) — it's the dependency the
+  project package's own `crystallization_wiring` adapter depends on, the
+  other way around (see `crystallization/plugin.py`'s docstring) — so
+  `SessionReplayPlugin` parses a `SCHEMA:`/`FIELDS:` block into a plain
+  `SchemaChange` (JSON-decoded, not compiled) and leaves resolving the
+  field-type expressions to apply time, in `crystallization_wiring.py`.
+  The orchestration (gather session data, build/monitor the codegen
+  agent, apply an approved proposal) lives in
   `crystalline/project/crystallization_wiring.py`, same pattern as
   `agent_wiring.py`/`monitoring_wiring.py`. A plugin only reads project
   state in `propose()`; `apply_crystallization` (the only thing that
   writes) runs only after human approval — see the CLI's `/crystallize`
-  below.
+  below. Applying a non-empty `schema_changes` needs `project_path`
+  (unlike a `FileChange`, a schema type has nowhere else to persist to,
+  and `/reload` re-reads the project *file*, so an in-memory-only
+  `project.schema` mutation would vanish on the reload `/crystallize`
+  triggers right after approval) — `apply_crystallization` raises
+  `RuntimeError` up front if one's needed and missing, rather than
+  registering it on the live schema and then silently losing it.
 
 - `crystalline.cli` — `crystalline/cli/*.py`. See **CLI practical notes**
   below.

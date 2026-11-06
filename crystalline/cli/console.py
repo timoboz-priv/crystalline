@@ -13,6 +13,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from rich.align import Align
 from rich.console import Console
 from rich.markdown import Markdown
 from rich.markup import escape
@@ -40,19 +41,80 @@ console = Console(theme=THEME)
 
 PROMPT_MARKUP = "[prompt]❯[/prompt] "
 
+# figlet "CRYSTALLINE" (font: slant), trimmed of its trailing blank line.
+LOGO = r"""   ____________  ________________    __    __    _____   ________
+  / ____/ __ \ \/ / ___/_  __/   |  / /   / /   /  _/ | / / ____/
+ / /   / /_/ /\  /\__ \ / / / /| | / /   / /    / //  |/ / __/
+/ /___/ _, _/ / /___/ // / / ___ |/ /___/ /____/ // /|  / /___
+\____/_/ |_| /_//____//_/ /_/  |_/_____/_____/___/_/ |_/_____/"""
 
-def print_banner(project: Any, username: str | None = None) -> None:
-    name, version = escape(project.name), escape(project.version)
-    lines = [f"[title]{name}[/title] [muted](v{version})[/muted]"]
-    if username is not None:
-        lines.append(f"[muted]logged in as[/muted] {escape(username)}")
-    lines.append(
+# The logo/info-box are centered within this fixed frame, not the real
+# terminal width — `console.print(..., width=BANNER_WIDTH)` overrides
+# the available width for just that call, so a wide terminal doesn't
+# drag the banner off to the right. Everything else (status line, the
+# prompt hint, command output) keeps using the console's real width.
+BANNER_WIDTH = 80
+
+
+def print_logo() -> None:
+    console.print(Align.center(Text(LOGO, style="title")), width=BANNER_WIDTH)
+
+
+def print_info_box(project: Any) -> None:
+    """Centered two-column info box: project/user/roles stacked on the
+    left, agent/storage/tool+skill counts stacked as three rows on the
+    right — same labels `status_segments` uses, just laid out as a box
+    instead of a status-line."""
+    token = current_token()
+
+    left = Table.grid(padding=(0, 2))
+    left.add_column()
+    name_line = Text()
+    name_line.append(project.name, style="bold white")
+    name_line.append(f" v{project.version}", style="muted")
+    left.add_row(name_line)
+    if token is not None:
+        left.add_row(Text(f"user: {token.sub}", style="muted"))
+        if token.roles:
+            left.add_row(Text(f"roles: {', '.join(token.roles)}", style="muted"))
+
+    storage_type = describe_storage(project.storage)["type"]
+    agent_type = project.agent_config.get("type", "?")
+    n_tools = len(list(project.tools))
+    n_skills = len(list(project.skills))
+    right = Table.grid(padding=(0, 2))
+    right.add_column()
+    right.add_row(Text(f"agent: {agent_type}", style="muted"))
+    right.add_row(Text(f"storage: {storage_type}", style="muted"))
+    right.add_row(Text(f"{n_tools} tools, {n_skills} skills", style="muted"))
+
+    layout = Table.grid(padding=(0, 4))
+    layout.add_column()
+    layout.add_column()
+    layout.add_row(left, right)
+
+    console.print(
+        Align.center(Panel(layout, border_style="cyan", expand=False)),
+        width=BANNER_WIDTH,
+    )
+
+
+def print_prompt_hint() -> None:
+    console.print(
         "[muted]Type a message, or /commands for a list of slash commands.[/muted]"
     )
-    panel = Panel(
-        "\n".join(lines), title="Crystalline", border_style="cyan", expand=False
-    )
-    console.print(panel)
+
+
+def print_banner(project: Any) -> None:
+    """Startup sequence: the big ASCII logo, then the centered info box,
+    then the left-aligned hint that sits above the first prompt line.
+    Login name/roles are read straight off `current_token()`, same as
+    `status_segments` — no need to pass them in."""
+    print_logo()
+    console.print()
+    print_info_box(project)
+    console.print()
+    print_prompt_hint()
 
 
 def status_segments(

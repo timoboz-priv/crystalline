@@ -10,11 +10,13 @@ from crystalline.crystallization import (
     CrystallizationProposal,
     CrystallizationRegistry,
     FileChange,
+    SchemaChange,
 )
 from crystalline.monitoring import SQLiteSessionStore
-from crystalline.project import Project
+from crystalline.project import Project, load_project, save_project
 from crystalline.project.crystallization_wiring import (
     apply_crystallization,
+    read_schema_field_specs,
     run_crystallization,
 )
 
@@ -216,3 +218,161 @@ def test_apply_crystallization_rejects_path_escaping_extensions_dir(project):
     )
     with pytest.raises(ValueError):
         apply_crystallization(project, proposal)
+
+
+def test_read_schema_field_specs_excludes_reserved_types():
+    project = Project("demo", "0.1.0")
+    specs = read_schema_field_specs(project)
+    assert "User" not in specs
+
+
+def test_apply_crystallization_schema_change_requires_project_path(project):
+    proposal = CrystallizationProposal(
+        plugin="session", title="t", rationale="r",
+        schema_changes=[
+            SchemaChange(type_name="OrderSummary", action="create", field_spec={"total": "float"})
+        ],
+    )
+    with pytest.raises(RuntimeError):
+        apply_crystallization(project, proposal)
+
+
+def test_apply_crystallization_schema_create_registers_type_and_persists(tmp_path, project):
+    project_path = tmp_path / "project.yaml"
+    save_project(project, project_path)
+
+    proposal = CrystallizationProposal(
+        plugin="session", title="t", rationale="r",
+        schema_changes=[
+            SchemaChange(
+                type_name="OrderSummary",
+                action="create",
+                field_spec={"order_id": "str", "total": "float"},
+            )
+        ],
+    )
+    apply_crystallization(project, proposal, project_path=project_path)
+
+    model = project.schema.get("OrderSummary")
+    assert model is not None
+    assert set(model.model_fields) == {"order_id", "total"}
+
+    reloaded = load_project(project_path)
+    reloaded_model = reloaded.schema.get("OrderSummary")
+    assert reloaded_model is not None
+    assert set(reloaded_model.model_fields) == {"order_id", "total"}
+
+
+def test_apply_crystallization_schema_create_with_id_gets_crud_tools(tmp_path, project):
+    project_path = tmp_path / "project.yaml"
+    save_project(project, project_path)
+
+    proposal = CrystallizationProposal(
+        plugin="session", title="t", rationale="r",
+        schema_changes=[
+            SchemaChange(
+                type_name="OrderSummary",
+                action="create",
+                field_spec={"id": "str", "total": "float"},
+            )
+        ],
+    )
+    apply_crystallization(project, proposal, project_path=project_path)
+    assert project.tools.get_tool("create_order_summary") is not None
+
+
+def test_apply_crystallization_schema_delete_removes_type_and_persists(tmp_path, project):
+    project_path = tmp_path / "project.yaml"
+    create_proposal = CrystallizationProposal(
+        plugin="session", title="t", rationale="r",
+        schema_changes=[
+            SchemaChange(
+                type_name="OrderSummary", action="create", field_spec={"total": "float"}
+            )
+        ],
+    )
+    save_project(project, project_path)
+    apply_crystallization(project, create_proposal, project_path=project_path)
+    assert project.schema.get("OrderSummary") is not None
+
+    delete_proposal = CrystallizationProposal(
+        plugin="session", title="t", rationale="r",
+        schema_changes=[SchemaChange(type_name="OrderSummary", action="delete")],
+    )
+    apply_crystallization(project, delete_proposal, project_path=project_path)
+    assert project.schema.get("OrderSummary") is None
+
+    reloaded = load_project(project_path)
+    assert reloaded.schema.get("OrderSummary") is None
+
+
+def test_apply_crystallization_bad_file_change_leaves_schema_change_unapplied(tmp_path, project):
+    # A SchemaChange must not land on project.schema/disk when the same
+    # proposal's FileChange is invalid — regression for a bug where the
+    # schema half was committed before the file path was even validated.
+    project_path = tmp_path / "project.yaml"
+    save_project(project, project_path)
+
+    proposal = CrystallizationProposal(
+        plugin="session", title="t", rationale="r",
+        changes=[FileChange(path="../escape.py", action="create", content="x = 1\n")],
+        schema_changes=[
+            SchemaChange(
+                type_name="OrderSummary", action="create", field_spec={"total": "float"}
+            )
+        ],
+    )
+    with pytest.raises(ValueError):
+        apply_crystallization(project, proposal, project_path=project_path)
+
+    assert project.schema.get("OrderSummary") is None
+    assert "OrderSummary" not in project_path.read_text()
+
+
+def test_apply_crystallization_bad_schema_reference_leaves_nothing_applied(tmp_path, project):
+    # A later SchemaChange with an unresolvable field-type expression
+    # must not leave an earlier SchemaChange in the same proposal
+    # half-applied to project.schema (even though it would validate on
+    # its own).
+    project_path = tmp_path / "project.yaml"
+    save_project(project, project_path)
+
+    proposal = CrystallizationProposal(
+        plugin="session", title="t", rationale="r",
+        schema_changes=[
+            SchemaChange(type_name="LineItem", action="create", field_spec={"sku": "str"}),
+            SchemaChange(
+                type_name="Order", action="create", field_spec={"items": "list[NoSuchType]"}
+            ),
+        ],
+    )
+    with pytest.raises(ValueError):
+        apply_crystallization(project, proposal, project_path=project_path)
+
+    assert project.schema.get("LineItem") is None
+    assert project.schema.get("Order") is None
+    assert "LineItem" not in project_path.read_text()
+
+
+def test_apply_crystallization_schema_change_can_reference_earlier_change_in_same_proposal(
+    tmp_path, project
+):
+    project_path = tmp_path / "project.yaml"
+    save_project(project, project_path)
+
+    proposal = CrystallizationProposal(
+        plugin="session", title="t", rationale="r",
+        schema_changes=[
+            SchemaChange(type_name="LineItem", action="create", field_spec={"sku": "str"}),
+            SchemaChange(
+                type_name="Order", action="create", field_spec={"items": "list[LineItem]"}
+            ),
+        ],
+    )
+    apply_crystallization(project, proposal, project_path=project_path)
+
+    order_model = project.schema.get("Order")
+    assert order_model is not None
+    reloaded = load_project(project_path)
+    assert reloaded.schema.get("Order") is not None
+    assert reloaded.schema.get("LineItem") is not None

@@ -8,6 +8,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from pydantic import ValidationError
+from rich.markup import escape
 from rich.panel import Panel
 from rich.syntax import Syntax
 
@@ -23,6 +24,7 @@ from crystalline.project import (
     describe_project,
     load_project,
     read_extension_files,
+    read_schema_field_specs,
     run_crystallization,
 )
 from crystalline.security import User, current_token, rebind_token
@@ -396,8 +398,16 @@ async def _crystallize(ctx: CLIContext, args: list[str]) -> bool:
         return True
 
     existing_files = read_extension_files(ctx.project)
-    console.print(Panel(proposal.rationale, title=proposal.title, border_style="cyan"))
-    render_result(summarize_changes(proposal, existing_files))
+    existing_field_specs = read_schema_field_specs(ctx.project)
+    # `proposal.title`/`.rationale` and `render_diff`'s `path` are all
+    # LLM-generated free text (ultimately derived from a monitored
+    # session's transcript) — escaped before going into a plain-string
+    # Panel title/content, same convention as everywhere else dynamic
+    # text meets rich markup (see CLAUDE.md's "Rich markup convention").
+    console.print(
+        Panel(escape(proposal.rationale), title=escape(proposal.title), border_style="cyan")
+    )
+    render_result(summarize_changes(proposal, existing_files, existing_field_specs))
 
     expanded = False
     while True:
@@ -410,8 +420,10 @@ async def _crystallize(ctx: CLIContext, args: list[str]) -> bool:
         choice = await _prompt_choice(prompt, choices)
 
         if choice == "e":
-            for path, diff_text in render_diff(proposal, existing_files):
-                console.print(Panel(Syntax(diff_text, "diff"), title=path, border_style="yellow"))
+            for path, diff_text in render_diff(proposal, existing_files, existing_field_specs):
+                console.print(
+                    Panel(Syntax(diff_text, "diff"), title=escape(path), border_style="yellow")
+                )
             expanded = True
             continue
         if choice == "c":
@@ -423,7 +435,7 @@ async def _crystallize(ctx: CLIContext, args: list[str]) -> bool:
         break  # choice == "a"
 
     try:
-        apply_crystallization(ctx.project, proposal)
+        apply_crystallization(ctx.project, proposal, project_path=ctx.project_path)
     except (RuntimeError, ValueError) as exc:
         print_error(str(exc))
         return True

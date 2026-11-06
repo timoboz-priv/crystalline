@@ -103,8 +103,7 @@ async def run_repl(
         project_path=project_path,
         session_id=session_id,
     )
-    token = current_token()
-    print_banner(project, username=token.sub if token is not None else None)
+    print_banner(project)
 
     # A real interactive terminal gets prompt_toolkit: a persistent box
     # with history (saved to HISTORY_PATH, recalled with Up/Down) and a

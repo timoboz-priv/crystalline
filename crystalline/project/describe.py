@@ -14,10 +14,15 @@ def describe_project(project: Project) -> str:
         f"storage:     {describe_storage(project.storage)}",
         f"agent:       {project.agent_config}",
         f"security:    roles={project.security.roles}",
-        f"tools:       {len(project.tools)} ({len(project.skills)} skills)",
         f"properties:  {project.properties}",
-        "schema:",
+        "tools:",
     ]
+    for tool in project.tools:
+        lines.append(f"  {tool.name}")
+    lines.append("skills:")
+    for skill in project.skills:
+        lines.append(f"  {skill.name}")
+    lines.append("schema:")
     for type_name, model in project.schema.types.items():
         lines.append(f"  {type_name}")
         for field_name, info in model.model_fields.items():

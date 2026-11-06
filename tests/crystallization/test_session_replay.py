@@ -4,11 +4,23 @@ import pytest
 
 from crystalline.crystallization import CrystallizationContext, SessionReplayPlugin
 from crystalline.monitoring import Session, SessionEvent, Turn
+from crystalline.schema import CrystallineModel, SchemaRegistry
+
+
+class _Order(CrystallineModel):
+    id: str
+    total: float
+
+
+def _schema_with_order() -> SchemaRegistry:
+    registry = SchemaRegistry()
+    registry.register(_Order, name="Order")
+    return registry
 
 
 class _StubProject:
     name = "demo"
-    schema = ["Order"]
+    schema = _schema_with_order()
     tools = []
     skills = []
     extensions_dir = None
@@ -118,6 +130,70 @@ RATIONALE:
 Wrongly labeled a Tool even though it chains two other tools' .invoke().
 """
 
+_WITH_SCHEMA_CHANGE_RESPONSE = """TITLE: Order summary skill
+SCHEMA: OrderSummary
+ACTION: create
+FIELDS:
+```json
+{"order_id": "str", "total": "float", "item_count": "int"}
+```
+FILE: skill_summarize_order.py
+KIND: skill
+ACTION: create
+```python
+def build_skill(project):
+    pass
+```
+RATIONALE:
+Needs a new OrderSummary type to return from the skill.
+"""
+
+_SCHEMA_DELETE_RESPONSE = """TITLE: Drop OrderSummary
+SCHEMA: OrderSummary
+ACTION: delete
+FILE: skill_summarize_order.py
+KIND: skill
+ACTION: delete
+RATIONALE:
+No longer needed.
+"""
+
+_SCHEMA_RESERVED_NAME_RESPONSE = """TITLE: Bad type name
+SCHEMA: User
+ACTION: create
+FIELDS:
+```json
+{"x": "str"}
+```
+FILE: skill_x.py
+KIND: skill
+ACTION: create
+```python
+def build_skill(project):
+    pass
+```
+RATIONALE:
+Tries to redeclare the reserved User type.
+"""
+
+_SCHEMA_BAD_JSON_RESPONSE = """TITLE: Bad json
+SCHEMA: OrderSummary
+ACTION: create
+FIELDS:
+```json
+{not valid json}
+```
+FILE: skill_x.py
+KIND: skill
+ACTION: create
+```python
+def build_skill(project):
+    pass
+```
+RATIONALE:
+FIELDS block isn't valid JSON.
+"""
+
 
 def test_parses_a_valid_single_file_proposal():
     agent = _FakeAgent([_VALID_RESPONSE])
@@ -180,3 +256,51 @@ def test_tool_chaining_multiple_tool_invokes_is_rejected_and_retried():
     assert proposal is not None
     assert len(agent.prompts) == 2
     assert "makes this a Skill" in agent.prompts[1]
+
+
+def test_parses_a_schema_change_alongside_a_file_change():
+    agent = _FakeAgent([_WITH_SCHEMA_CHANGE_RESPONSE])
+    proposal = asyncio.run(SessionReplayPlugin().propose(_ctx(agent)))
+    assert proposal is not None
+    [schema_change] = proposal.schema_changes
+    assert schema_change.type_name == "OrderSummary"
+    assert schema_change.action == "create"
+    assert schema_change.field_spec == {
+        "order_id": "str",
+        "total": "float",
+        "item_count": "int",
+    }
+    [file_change] = proposal.changes
+    assert file_change.path == "skill_summarize_order.py"
+
+
+def test_parses_a_schema_delete_with_no_fields_block():
+    agent = _FakeAgent([_SCHEMA_DELETE_RESPONSE])
+    proposal = asyncio.run(SessionReplayPlugin().propose(_ctx(agent)))
+    assert proposal is not None
+    [schema_change] = proposal.schema_changes
+    assert schema_change.action == "delete"
+    assert schema_change.field_spec is None
+
+
+def test_response_without_a_schema_block_has_no_schema_changes():
+    agent = _FakeAgent([_VALID_RESPONSE])
+    proposal = asyncio.run(SessionReplayPlugin().propose(_ctx(agent)))
+    assert proposal is not None
+    assert proposal.schema_changes == []
+
+
+def test_schema_change_with_reserved_type_name_is_rejected_and_retried():
+    agent = _FakeAgent([_SCHEMA_RESERVED_NAME_RESPONSE, _VALID_RESPONSE])
+    proposal = asyncio.run(SessionReplayPlugin().propose(_ctx(agent)))
+    assert proposal is not None
+    assert len(agent.prompts) == 2
+    assert "reserved" in agent.prompts[1]
+
+
+def test_schema_change_with_invalid_json_is_rejected_and_retried():
+    agent = _FakeAgent([_SCHEMA_BAD_JSON_RESPONSE, _VALID_RESPONSE])
+    proposal = asyncio.run(SessionReplayPlugin().propose(_ctx(agent)))
+    assert proposal is not None
+    assert len(agent.prompts) == 2
+    assert "invalid JSON" in agent.prompts[1]

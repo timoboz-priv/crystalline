@@ -23,6 +23,25 @@ def test_project_command_prints_description(capsys):
     assert "a shop" in out
 
 
+def test_project_command_lists_tools_and_skills_one_per_line(capsys):
+    command = default_commands.get("project")
+    assert command is not None
+    project = Project("demo-shop", "0.1.0")
+    project.sync_tools()  # at least the User admin tools are generated
+    ctx = CLIContext(project=project, agent=object(), commands=default_commands)
+
+    assert command.handler(ctx, []) is True
+
+    out = capsys.readouterr().out
+    tool_names = [tool.name for tool in project.tools]
+    assert tool_names
+    for name in tool_names:
+        assert name in out
+    lines = out.splitlines()
+    tools_index = next(i for i, line in enumerate(lines) if "tools:" in line)
+    assert tool_names[0] in lines[tools_index + 1]
+
+
 def test_unknown_command_returns_none():
     assert default_commands.get("nope") is None
 
